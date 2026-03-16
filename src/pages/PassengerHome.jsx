@@ -31,8 +31,8 @@ const MAX_KM         = 100
 const LONG_STOP_MINS = 5
 const ETA_REFRESH_MS = 15000
 const GPS_CACHE_KEY  = 'jc_last_pos'
-const SHEET_HEIGHT   = '42vh'
-const BOTTOM_PAD     = 180
+const SHEET_HEIGHT   = '38vh'
+const BOTTOM_PAD     = 160
 
 function saveGPS(lat, lng) { try { localStorage.setItem(GPS_CACHE_KEY, JSON.stringify({ lat, lng, ts: Date.now() })) } catch {} }
 function loadGPS() { try { const d = JSON.parse(localStorage.getItem(GPS_CACHE_KEY)); return d && Date.now()-d.ts < 3600000 ? d : null } catch { return null } }
@@ -53,8 +53,8 @@ const lerp = (a,b,t) => a+(b-a)*t
 const DEMO_PICKUP = { id:'demo_p', short:'Esplanade, Kolkata', label:'Esplanade, Kolkata', lat:22.5636, lng:88.3511 }
 const DEMO_DROP   = { id:'demo_d', short:'Howrah Railway Station', label:'Howrah Rly Stn', lat:22.5839, lng:88.3424 }
 
-function makeDemoPath(sLat, sLng, pLat, pLng) {
-  return Array.from({ length:31 }, (_,i) => [lerp(sLat,pLat,i/30), lerp(sLng,pLng,i/30)])
+function makeDemoPath(sLat, sLng, pLat, pLng, steps = 30) {
+  return Array.from({ length:steps+1 }, (_,i) => [lerp(sLat,pLat,i/steps), lerp(sLng,pLng,i/steps)])
 }
 
 export default function PassengerHome({ onMenu }) {
@@ -97,9 +97,10 @@ export default function PassengerHome({ onMenu }) {
   const [demoActive,  setDemoActive]  = useState(false)
   const [demoDrvPos,  setDemoDrvPos]  = useState(null)
   const [demoPhase,   setDemoPhase]   = useState('idle')
-  const demoIv   = useRef(null)
-  const demoPath = useRef([])
-  const demoStep = useRef(0)
+  const demoIv          = useRef(null)
+  const demoPath        = useRef([])
+  const demoStep        = useRef(0)
+  const demoPickupStep  = useRef(0)
 
   /* === Back button — phone back = close overlay, not exit app === */
   useEffect(() => {
@@ -181,9 +182,11 @@ export default function PassengerHome({ onMenu }) {
 
   useEffect(() => {
     if (!pickup || rideState !== 'idle') return
-    const unsub = subscribeToNearbyDrivers(pickup.lat, pickup.lng, d => {
-      if (Array.isArray(d)) setNearbyDrvs(d.map(x=>[x.lat??x.current_lat, x.lng??x.current_lng]).filter(p=>p[0]&&p[1]))
-      else if (d?.current_lat) setNearbyDrvs(prev => { const exists=prev.find(p=>Math.abs(p[0]-d.current_lat)<0.0001); return exists?prev:[...prev.slice(-7),[d.current_lat,d.current_lng]] })
+    const unsub = subscribeToNearbyDrivers(pickup.lat, pickup.lng, drivers => {
+      // drivers is array of [lat,lng] — pass all to map
+      if (Array.isArray(drivers)) {
+        setNearbyDrvs(drivers.filter(p => p[0] && p[1]))
+      }
       if (drop) runETA(pickup, drop)
     })
     return unsub
@@ -245,14 +248,23 @@ export default function PassengerHome({ onMenu }) {
   /* === Demo === */
   function startDemo() {
     if (demoActive) return stopDemo()
-    const p = pickup || DEMO_PICKUP; const d = drop || DEMO_DROP
+    const p = pickup || DEMO_PICKUP
+    const d = drop   || DEMO_DROP
     if (!pickup) setPickup(DEMO_PICKUP)
     if (!drop)   setDrop(DEMO_DROP)
-    const sLat = p.lat + 0.008 + Math.random()*0.006
-    const sLng = p.lng - 0.010 + Math.random()*0.006
-    demoPath.current = makeDemoPath(sLat, sLng, p.lat, p.lng)
+    // Demo driver starts 1-2 km away from pickup
+    const angle = Math.random() * 2 * Math.PI
+    const dist  = 0.8 + Math.random() * 0.8
+    const sLat  = p.lat + (dist/111) * Math.cos(angle)
+    const sLng  = p.lng + (dist/111) * Math.sin(angle)
+    // Path: driver → pickup → drop
+    const pickupPath = makeDemoPath(sLat, sLng, p.lat, p.lng, 25)
+    const ridePath   = makeDemoPath(p.lat, p.lng, d.lat, d.lng, 35)
+    demoPath.current = [...pickupPath, ...ridePath]
     demoStep.current = 0
-    setDemoActive(true); setDemoPhase('approaching'); setDemoDrvPos([sLat, sLng])
+    demoPickupStep.current = pickupPath.length  // index where ride starts
+    setDemoActive(true); setDemoPhase('approaching')
+    setDemoDrvPos([sLat, sLng])
   }
 
   useEffect(() => {
@@ -260,11 +272,35 @@ export default function PassengerHome({ onMenu }) {
     clearInterval(demoIv.current)
     demoIv.current = setInterval(() => {
       demoStep.current++
-      if (demoStep.current >= demoPath.current.length) { clearInterval(demoIv.current); setDemoPhase('arrived'); return }
-      setDemoDrvPos([...demoPath.current[demoStep.current]])
-    }, 400)
+      const step = demoStep.current
+      const path = demoPath.current
+      if (step >= path.length) {
+        clearInterval(demoIv.current)
+        setDemoPhase('completed')
+        setTimeout(() => stopDemo(), 2000)
+        return
+      }
+      setDemoDrvPos([...path[step]])
+      // Transition phases based on path position
+      if (step === demoPickupStep.current) {
+        setDemoPhase('arrived')
+        // Pause 2s at pickup, then start ride
+        clearInterval(demoIv.current)
+        setTimeout(() => {
+          setDemoPhase('riding')
+          demoIv.current = setInterval(() => {
+            demoStep.current++
+            if (demoStep.current >= demoPath.current.length) {
+              clearInterval(demoIv.current); setDemoPhase('completed')
+              setTimeout(() => stopDemo(), 2500); return
+            }
+            setDemoDrvPos([...demoPath.current[demoStep.current]])
+          }, 300)
+        }, 2000)
+      }
+    }, 350)
     return () => clearInterval(demoIv.current)
-  }, [demoActive])
+  }, [demoActive]) // eslint-disable-line
 
   function stopDemo() {
     clearInterval(demoIv.current); setDemoActive(false); setDemoDrvPos(null)
@@ -402,8 +438,7 @@ export default function PassengerHome({ onMenu }) {
           <div className="t-tiny t-muted" style={{ overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' }}>{driver?.vehicle_model} - {driver?.vehicle_number}</div>
         </div>
         <div style={{ display:'flex', gap:6 }}>
-          <a href={`tel:${driver?.phone}`} className="btn btn-icon" style={{ background:'#ECFDF5', color:'var(--green)' }}><PhoneIcon /></a>
-          <a href={`https://wa.me/${driver?.phone?.replace(/\D/g,'')}`} target="_blank" rel="noopener noreferrer" className="btn btn-icon" style={{ background:'#F0FDF4', color:'#25D366' }}><WaIcon /></a>
+          <div style={{ fontSize:11, background:'#FFF7ED', color:'#FF5F1F', padding:'4px 10px', borderRadius:20, fontWeight:700 }}>In-app chat</div>
         </div>
       </div>
       <div className="scroll" style={{ flex:1, padding:16, display:'flex', flexDirection:'column', gap:10 }}>
@@ -501,7 +536,10 @@ export default function PassengerHome({ onMenu }) {
       {demoActive && (
         <div style={{ position:'absolute', top:'calc(env(safe-area-inset-top,0px) + 72px)', left:'50%', transform:'translateX(-50%)', zIndex:25, background:'rgba(0,0,0,0.82)', color:'#fff', borderRadius:20, padding:'6px 16px', fontSize:12, fontWeight:700, backdropFilter:'blur(12px)', display:'flex', alignItems:'center', gap:8, whiteSpace:'nowrap', boxShadow:'0 4px 12px rgba(0,0,0,0.3)' }}>
           <span style={{ width:8, height:8, borderRadius:'50%', background:'#22C55E', display:'inline-block', animation:'pulse 1.2s ease infinite' }} />
-          {demoPhase==='arrived' ? '🛵 DEMO · Captain arrived!' : '🛵 DEMO · Captain is on the way...'}
+          {demoPhase==='arrived' ? '🛵 DEMO · Captain arrived!' 
+            : demoPhase==='riding' ? '🛵 DEMO · Ride in progress...'
+            : demoPhase==='completed' ? '✅ DEMO · Ride completed!'
+            : '🛵 DEMO · Captain is on the way...'}
           <style>{`@keyframes pulse{0%,100%{opacity:1}50%{opacity:0.4}}`}</style>
         </div>
       )}
@@ -579,25 +617,54 @@ export default function PassengerHome({ onMenu }) {
             </div>
           )}
 
-          {/* SEARCHING */}
+          {/* SEARCHING — Rapido-style radar animation */}
           {rideState==='searching' && (
-            <div className="anim-up" style={{ padding:'16px 16px 16px', textAlign:'center' }}>
+            <div className="anim-up" style={{ padding:'16px 16px 14px' }}>
+              <style>{`
+                @keyframes radarPing{0%{transform:scale(0.4);opacity:0.9}100%{transform:scale(2.8);opacity:0}}
+                @keyframes radarSpin{0%{transform:rotate(0deg)}100%{transform:rotate(360deg)}}
+                @keyframes dotPulse{0%,100%{opacity:1;transform:scale(1)}50%{opacity:0.4;transform:scale(0.7)}}
+              `}</style>
+              {/* Radar animation */}
               <div style={{ display:'flex', justifyContent:'center', marginBottom:14 }}>
-                <div style={{ width:52, height:52, border:'4px solid var(--brand-light)', borderTopColor:'var(--brand)', borderRadius:'50%', animation:'spin 0.8s linear infinite' }} />
+                <div style={{ position:'relative', width:80, height:80 }}>
+                  {/* Ping rings */}
+                  {[0,0.4,0.8].map(d => (
+                    <div key={d} style={{ position:'absolute', inset:0, borderRadius:'50%', border:'2px solid var(--brand)', animation:`radarPing 1.8s ease-out ${d}s infinite`, opacity:0 }} />
+                  ))}
+                  {/* Center scooter */}
+                  <div style={{ position:'absolute', inset:0, display:'flex', alignItems:'center', justifyContent:'center' }}>
+                    <div style={{ width:46, height:46, borderRadius:'50%', background:'linear-gradient(135deg,#FF5F1F,#FF8C00)', display:'flex', alignItems:'center', justifyContent:'center', fontSize:22, boxShadow:'0 4px 16px rgba(255,95,31,0.4)' }}>🛵</div>
+                  </div>
+                  {/* Rotating sweep */}
+                  <div style={{ position:'absolute', inset:0, borderRadius:'50%', border:'2px solid transparent', borderTopColor:'rgba(255,95,31,0.6)', animation:'radarSpin 1.2s linear infinite' }} />
+                </div>
               </div>
-              <div className="t-h2" style={{ marginBottom:4 }}>Finding captain...</div>
-              <div className="t-body t-muted" style={{ marginBottom:14 }}>
-                {dispatchMsg || 'Matching with nearby drivers...'}
+              {/* Status text */}
+              <div style={{ textAlign:'center', marginBottom:12 }}>
+                <div style={{ fontWeight:800, fontSize:17, marginBottom:4 }}>Finding captain...</div>
+                <div style={{ fontSize:13, color:'var(--text3)', lineHeight:1.5, minHeight:20 }}>
+                  {dispatchMsg || 'Scanning nearby captains...'}
+                </div>
               </div>
-              <div style={{ background:'var(--bg2)', borderRadius:12, padding:'12px 16px', marginBottom:14, textAlign:'left' }}>
-                {[{l:'Pickup',v:pickup?.short},{l:'Drop',v:drop?.short},{l:'Fare',v:ride?.fare?fmtRs(ride.fare):'—'}].map(r => (
-                  <div key={r.l} style={{ display:'flex', justifyContent:'space-between', marginBottom:4 }}>
-                    <span className="t-body t-muted">{r.l}</span>
-                    <span className="t-h3" style={{ maxWidth:'65%', textAlign:'right', overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' }}>{r.v}</span>
+              {/* Animated dots */}
+              <div style={{ display:'flex', justifyContent:'center', gap:6, marginBottom:14 }}>
+                {[0,0.2,0.4].map(d => (
+                  <div key={d} style={{ width:7, height:7, borderRadius:'50%', background:'var(--brand)', animation:`dotPulse 1.2s ease ${d}s infinite` }} />
+                ))}
+              </div>
+              {/* Ride summary */}
+              <div style={{ background:'var(--bg2)', borderRadius:14, padding:'12px 14px', marginBottom:12 }}>
+                {[{l:'📍 Pickup',v:pickup?.short},{l:'🎯 Drop',v:drop?.short},{l:'💰 Fare',v:ride?.fare?fmtRs(ride.fare):'—'}].map(r => (
+                  <div key={r.l} style={{ display:'flex', justifyContent:'space-between', alignItems:'center', padding:'5px 0', borderBottom:'1px solid var(--border)' }}>
+                    <span style={{ fontSize:12, color:'var(--text3)', fontWeight:600 }}>{r.l}</span>
+                    <span style={{ fontSize:13, fontWeight:700, maxWidth:'60%', textAlign:'right', overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' }}>{r.v}</span>
                   </div>
                 ))}
               </div>
-              <button className="btn btn-outline" style={{ color:'var(--red)', borderColor:'rgba(220,38,38,0.3)' }} onClick={openCancelModal}>Cancel</button>
+              <button className="btn btn-outline" style={{ color:'var(--red)', borderColor:'rgba(220,38,38,0.3)', width:'100%' }} onClick={openCancelModal}>
+                Cancel Ride
+              </button>
             </div>
           )}
 
@@ -633,7 +700,7 @@ export default function PassengerHome({ onMenu }) {
                 )}
               </div>
               <div style={{ display:'flex', gap:8, marginBottom:10 }}>
-                <a href={`tel:${driver.phone}`} className="btn btn-ghost btn-sm" style={{ flex:1, borderRadius:12, color:'var(--green)' }}><PhoneIcon /> Call</a>
+                <button onClick={() => setShowChat(true)} className="btn btn-ghost btn-sm" style={{ flex:1, borderRadius:12, color:'var(--brand)' }}><ChatIcon /> Chat</button>
                 <button className="btn btn-ghost btn-sm" style={{ flex:1, borderRadius:12 }} onClick={() => setShowChat(true)}><ChatIcon /> Chat</button>
                 <a href={`https://wa.me/${driver.phone?.replace(/\D/g,'')}`} target="_blank" rel="noopener noreferrer" className="btn btn-ghost btn-sm" style={{ flex:1, borderRadius:12, color:'#25D366' }}><WaIcon /></a>
               </div>
@@ -655,7 +722,7 @@ export default function PassengerHome({ onMenu }) {
               </div>
               <div style={{ display:'flex', gap:8 }}>
                 <button className="btn btn-ghost btn-sm" style={{ flex:1, borderRadius:12 }} onClick={() => setShowChat(true)}><ChatIcon /> Chat</button>
-                <a href={`tel:${driver?.phone}`} className="btn btn-ghost btn-sm" style={{ flex:1, borderRadius:12, color:'var(--green)' }}><PhoneIcon /> Call</a>
+                <button onClick={() => setShowChat(true)} className="btn btn-ghost btn-sm" style={{ flex:1, borderRadius:12, color:'var(--brand)' }}><ChatIcon /> Chat</button>
               </div>
             </div>
           )}
