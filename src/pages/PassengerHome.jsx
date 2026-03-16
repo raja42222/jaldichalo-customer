@@ -31,8 +31,8 @@ const MAX_KM         = 100
 const LONG_STOP_MINS = 5
 const ETA_REFRESH_MS = 15000
 const GPS_CACHE_KEY  = 'jc_last_pos'
-const SHEET_HEIGHT   = '38vh'
-const BOTTOM_PAD     = 160
+const SHEET_HEIGHT   = '32vh'
+const BOTTOM_PAD     = 140
 
 function saveGPS(lat, lng) { try { localStorage.setItem(GPS_CACHE_KEY, JSON.stringify({ lat, lng, ts: Date.now() })) } catch {} }
 function loadGPS() { try { const d = JSON.parse(localStorage.getItem(GPS_CACHE_KEY)); return d && Date.now()-d.ts < 3600000 ? d : null } catch { return null } }
@@ -465,7 +465,7 @@ export default function PassengerHome({ onMenu }) {
   )
 
   /* === Main Screen === */
-  const sheetH = rideState==='idle' ? (pickup && drop ? '62vh' : SHEET_HEIGHT) : 'auto'
+  const sheetH = rideState==='idle' ? (pickup && drop ? '58vh' : SHEET_HEIGHT) : 'auto'
   const bPad   = rideState==='idle' ? (pickup && drop ? 260 : BOTTOM_PAD) : 180
 
   return (
