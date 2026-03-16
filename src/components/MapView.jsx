@@ -122,7 +122,7 @@ class DriverAnim {
     const bear = lerpAngle(this.fromB, this.toB, easeSmooth(raw))
     const icon = this.el?.querySelector('.drv-icon')
     // 🛵 emoji faces left (West), so offset +90° so it faces direction of travel
-    if (icon) icon.style.transform = `rotate(${bear + 90}deg)`
+    if (icon) icon.style.transform = `rotate(${bear}deg)`
     if (raw<1) { this.rafId=requestAnimationFrame(ts2=>this._step(ts2)) }
     else { this.cur=this.to; this.bearing=this.toB; this.rafId=null; if(this.queue.length) this._next() }
   }
@@ -130,10 +130,10 @@ class DriverAnim {
   teleport(lng,lat) {
     this.cur=[lng,lat]; this.from=[lng,lat]
     this.queue=[]; this.hist=[[lng,lat]]
-    this.bearing=90  // default: face East (right)
+    this.bearing=0   // default: face North (up)
     if(this.mk) this.mk.setLngLat([lng,lat])
     const icon = this.el?.querySelector('.drv-icon')
-    if(icon) icon.style.transform = 'rotate(90deg)'
+    if(icon) icon.style.transform = 'rotate(0deg)'
   }
   destroy() {
     if(this.rafId) cancelAnimationFrame(this.rafId)
@@ -338,15 +338,30 @@ function dropHtml() {
 }
 
 function driverHtml() {
+  /* SVG car pointing UP (North=0°) — rotation works perfectly without offset */
   return `
     <style>
-      .drv-wrap{position:relative;width:54px;height:54px}
-      .drv-icon{width:54px;height:54px;display:flex;align-items:center;justify-content:center;will-change:transform;transform-origin:center}
-      .drv-inner{width:48px;height:48px;border-radius:50%;background:linear-gradient(145deg,#FF5F1F,#FF9500);display:flex;align-items:center;justify-content:center;font-size:24px;border:3px solid rgba(255,255,255,0.95);box-shadow:0 0 0 4px rgba(255,95,31,0.2),0 6px 20px rgba(255,95,31,0.4)}
-      @keyframes drPulse{0%{box-shadow:0 0 0 0 rgba(255,95,31,0.5)}70%{box-shadow:0 0 0 12px rgba(255,95,31,0)}100%{box-shadow:0 0 0 0 rgba(255,95,31,0)}}
-      .drv-inner{animation:drPulse 2s ease infinite}
+      .drv-wrap{position:relative;width:48px;height:48px;filter:drop-shadow(0 4px 12px rgba(255,95,31,0.5))}
+      .drv-icon{width:48px;height:48px;will-change:transform;transform-origin:center center;display:block}
+      @keyframes drPulse2{0%{opacity:0.7;transform:scale(1)}70%{opacity:0;transform:scale(2.2)}100%{opacity:0}}
+      .drv-pulse{position:absolute;inset:2px;border-radius:50%;border:2.5px solid rgba(255,95,31,0.7);animation:drPulse2 2s ease-out infinite;pointer-events:none}
     </style>
-    <div class="drv-wrap"><div class="drv-icon"><div class="drv-inner">🛵</div></div></div>`
+    <div class="drv-wrap">
+      <div class="drv-pulse"></div>
+      <svg class="drv-icon" viewBox="0 0 48 48" fill="none" xmlns="http://www.w3.org/2000/svg">
+        <!-- Circle background -->
+        <circle cx="24" cy="24" r="22" fill="url(#drvGrad)" stroke="white" stroke-width="2.5"/>
+        <!-- Car/bike shape pointing UP -->
+        <!-- Arrow pointing up like Rapido -->
+        <path d="M24 10 L31 28 L24 24 L17 28 Z" fill="white" opacity="0.95"/>
+        <defs>
+          <linearGradient id="drvGrad" x1="0" y1="0" x2="48" y2="48" gradientUnits="userSpaceOnUse">
+            <stop offset="0%" stop-color="#FF5F1F"/>
+            <stop offset="100%" stop-color="#FF9500"/>
+          </linearGradient>
+        </defs>
+      </svg>
+    </div>`
 }
 
 function nearbyDotHtml(i) {
