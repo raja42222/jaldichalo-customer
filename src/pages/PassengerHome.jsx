@@ -31,8 +31,8 @@ const MAX_KM         = 100
 const LONG_STOP_MINS = 5
 const ETA_REFRESH_MS = 15000
 const GPS_CACHE_KEY  = 'jc_last_pos'
-const SHEET_HEIGHT   = '50vh'
-const BOTTOM_PAD     = 280
+const SHEET_HEIGHT   = '42vh'
+const BOTTOM_PAD     = 180
 
 function saveGPS(lat, lng) { try { localStorage.setItem(GPS_CACHE_KEY, JSON.stringify({ lat, lng, ts: Date.now() })) } catch {} }
 function loadGPS() { try { const d = JSON.parse(localStorage.getItem(GPS_CACHE_KEY)); return d && Date.now()-d.ts < 3600000 ? d : null } catch { return null } }
@@ -430,8 +430,8 @@ export default function PassengerHome({ onMenu }) {
   )
 
   /* === Main Screen === */
-  const sheetH = rideState==='idle' ? SHEET_HEIGHT : 'auto'
-  const bPad   = rideState==='idle' ? BOTTOM_PAD   : 200
+  const sheetH = rideState==='idle' ? (pickup && drop ? '62vh' : SHEET_HEIGHT) : 'auto'
+  const bPad   = rideState==='idle' ? (pickup && drop ? 260 : BOTTOM_PAD) : 180
 
   return (
     <div style={{ position:'fixed', inset:0, overflow:'hidden' }}>
@@ -453,7 +453,7 @@ export default function PassengerHome({ onMenu }) {
           dropCoords={drop ? [drop.lat, drop.lng] : null}
           driverCoords={effectiveDrvPos}
           nearbyDrivers={rideState==='idle' ? nearbyDrvs : []}
-          showRoute={!!pickup && !!drop && !distErr}
+          showRoute={(!!pickup && !!drop && !distErr) || rideState==='tracking' || demoActive}
           zoom={14}
           bottomPad={bPad}
           onReady={() => setMapReady(true)}
@@ -461,10 +461,10 @@ export default function PassengerHome({ onMenu }) {
         <SkeletonMap visible={!mapReady} />
       </div>
 
-      {/* Top bar overlay */}
-      <div style={{ position:'absolute', top:'var(--safe-top)', left:0, right:0, zIndex:30, padding:'10px 14px', display:'flex', alignItems:'center', justifyContent:'space-between', background:'rgba(255,255,255,0.92)', backdropFilter:'blur(14px)', WebkitBackdropFilter:'blur(14px)', borderBottom:'1px solid rgba(0,0,0,0.06)' }}>
-        <button className="btn btn-icon" onClick={onMenu}><MenuIcon /></button>
-        <div style={{ display:'flex', alignItems:'center', gap:8, background:'var(--brand-light)', borderRadius:10, padding:'6px 14px' }}>
+      {/* Top bar — floating transparent overlay like Rapido */}
+      <div style={{ position:'absolute', top:0, left:0, right:0, zIndex:30, padding:'calc(env(safe-area-inset-top,0px)+10px) 14px 10px', display:'flex', alignItems:'center', justifyContent:'space-between', pointerEvents:'none' }}>
+        <button style={{ pointerEvents:'all', width:42, height:42, borderRadius:'50%', background:'rgba(255,255,255,0.95)', backdropFilter:'blur(12px)', WebkitBackdropFilter:'blur(12px)', border:'none', cursor:'pointer', display:'flex', alignItems:'center', justifyContent:'center', boxShadow:'0 2px 10px rgba(0,0,0,0.15)' }} onClick={onMenu}><MenuIcon /></button>
+        <div style={{ pointerEvents:'all', display:'flex', alignItems:'center', gap:7, background:'rgba(255,255,255,0.95)', backdropFilter:'blur(12px)', WebkitBackdropFilter:'blur(12px)', borderRadius:22, padding:'8px 16px', boxShadow:'0 2px 10px rgba(0,0,0,0.12)' }}>
           <span style={{ fontSize:14 }}>⚡</span>
           <span style={{ fontFamily:"'Space Grotesk',sans-serif", fontWeight:700, fontSize:15, color:'var(--brand)' }}>Jaldi Chalo</span>
         </div>
@@ -472,13 +472,15 @@ export default function PassengerHome({ onMenu }) {
       </div>
 
       {/* Locate-me button */}
-      <button className="map-btn" style={{ position:'absolute', right:12, bottom:`calc(${sheetH} + 56px)`, zIndex:20 }} onClick={recenterGPS}>
+      {/* Locate-me — always visible, 16px above sheet top */}
+      <button onClick={recenterGPS}
+        style={{ position:'absolute', right:14, bottom:`calc(${SHEET_HEIGHT} + 16px)`, zIndex:30, width:46, height:46, borderRadius:'50%', background:'#fff', boxShadow:'0 3px 14px rgba(0,0,0,0.20)', display:'flex', alignItems:'center', justifyContent:'center', border:'none', cursor:'pointer', transition:'bottom 0.3s' }}>
         <LocIcon />
       </button>
 
       {/* Distance pill */}
       {eta?.rideInfo?.distance_km && !distErr && rideState==='idle' && (
-        <div className="map-pill" style={{ position:'absolute', top:70, right:14, zIndex:20 }}>
+        <div className="map-pill" style={{ position:'absolute', top:'calc(env(safe-area-inset-top,0px) + 68px)', right:14, zIndex:20 }}>
           <span>🛣️</span>
           <span style={{ fontWeight:800 }}>{eta.rideInfo.distance_km.toFixed(1)} km</span>
           <span style={{ color:'var(--text3)' }}>·</span>
@@ -490,22 +492,23 @@ export default function PassengerHome({ onMenu }) {
 
       {/* Safety bar */}
       {isActive && ride && (
-        <div style={{ position:'absolute', top:60, left:0, right:0, zIndex:25 }}>
+        <div style={{ position:'absolute', top:'calc(env(safe-area-inset-top,0px) + 66px)', left:0, right:0, zIndex:25 }}>
           <SafetyBar rideId={ride.id} userId={profile.id} role="passenger" gps={gps} onReport={() => setShowReport(true)} />
         </div>
       )}
 
       {/* Demo badge */}
       {demoActive && (
-        <div style={{ position:'absolute', top:68, left:'50%', transform:'translateX(-50%)', zIndex:25, background:'rgba(0,0,0,0.78)', color:'#fff', borderRadius:20, padding:'5px 14px', fontSize:12, fontWeight:700, backdropFilter:'blur(8px)', display:'flex', alignItems:'center', gap:6, whiteSpace:'nowrap' }}>
-          <span style={{ width:7, height:7, borderRadius:'50%', background:'#22C55E', display:'inline-block' }} />
-          {demoPhase==='arrived' ? 'DEMO · Captain arrived!' : 'DEMO · Captain approaching...'}
+        <div style={{ position:'absolute', top:'calc(env(safe-area-inset-top,0px) + 72px)', left:'50%', transform:'translateX(-50%)', zIndex:25, background:'rgba(0,0,0,0.82)', color:'#fff', borderRadius:20, padding:'6px 16px', fontSize:12, fontWeight:700, backdropFilter:'blur(12px)', display:'flex', alignItems:'center', gap:8, whiteSpace:'nowrap', boxShadow:'0 4px 12px rgba(0,0,0,0.3)' }}>
+          <span style={{ width:8, height:8, borderRadius:'50%', background:'#22C55E', display:'inline-block', animation:'pulse 1.2s ease infinite' }} />
+          {demoPhase==='arrived' ? '🛵 DEMO · Captain arrived!' : '🛵 DEMO · Captain is on the way...'}
+          <style>{`@keyframes pulse{0%,100%{opacity:1}50%{opacity:0.4}}`}</style>
         </div>
       )}
 
       {/* Bottom overlay */}
       <div style={{ position:'absolute', bottom:0, left:0, right:0, zIndex:20 }}>
-        {rideState==='idle' && (
+        {rideState==='idle' && !pickup && !drop && (
           <div style={{ padding:'0 14px 8px' }}>
             <button onClick={() => setLocMode('drop')} style={{ width:'100%', display:'flex', alignItems:'center', gap:10, background:'rgba(255,255,255,0.97)', backdropFilter:'blur(12px)', WebkitBackdropFilter:'blur(12px)', borderRadius:28, padding:'13px 18px', border:'none', cursor:'pointer', boxShadow:'0 4px 20px rgba(0,0,0,0.15)', fontSize:15, color:'var(--text3)', fontFamily:'inherit' }}>
               <svg width="17" height="17" fill="none" stroke="var(--text3)" strokeWidth="2" viewBox="0 0 24 24"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
@@ -609,7 +612,7 @@ export default function PassengerHome({ onMenu }) {
                 <div style={{ flex:1 }}>
                   <div className="t-h2">{driver.name}</div>
                   <div style={{ display:'flex', gap:3, alignItems:'center', marginTop:2 }}>
-                    {[1,2,3,4,5].map(s=><StarIcon key={s} f={s<=Math.round(driver.rating||5)} />)}
+                    {[1,2,3,4,5].map(s => { const filled = s <= Math.round(driver.rating||5); return <StarIcon key={s} f={filled} /> })}
                     <span className="t-small t-muted" style={{ marginLeft:4 }}>{(driver.rating||5.0).toFixed(1)} · {driver.total_rides||0} rides</span>
                   </div>
                 </div>
