@@ -123,7 +123,7 @@ export default function LocationSearch({ mode, currentLoc, onSelect, onClose, bo
       const res = await searchPlaces(query, biasLat, biasLng)
       setResults(res)
       setLoading(false)
-    }, 300)   // 300ms debounce — fast enough to feel instant
+    }, 200)   // 200ms debounce — fast enough to feel instant
   }, [query, currentLoc])
 
   function pick(place) {
@@ -182,9 +182,11 @@ export default function LocationSearch({ mode, currentLoc, onSelect, onClose, bo
               autoCorrect="off"
               spellCheck={false}
             />
-            {query
-              ? <button onClick={()=>setQuery('')} style={{ background:'none', border:'none', cursor:'pointer', color:'#aaa', flexShrink:0 }}><XIcon /></button>
-              : loading ? <SpinIcon /> : null
+            {loading
+              ? <SpinIcon />
+              : query
+                ? <button onClick={()=>setQuery('')} style={{ background:'none', border:'none', cursor:'pointer', color:'#aaa', flexShrink:0 }}><XIcon /></button>
+                : null
             }
           </div>
         </div>
@@ -225,7 +227,7 @@ export default function LocationSearch({ mode, currentLoc, onSelect, onClose, bo
                   </div>
                   <div style={{ flex:1, minWidth:0 }}>
                     <div style={{ fontWeight:600, fontSize:14, overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' }}>{p.short}</div>
-                    <div style={{ fontSize:12, color:'#888', marginTop:2, overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' }}>{p.label}</div>
+                    <div style={{ fontSize:12, color:'#888', marginTop:2, overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' }}>{p.sublabel || p.label}</div>
                   </div>
                 </div>
               ))}
@@ -244,7 +246,7 @@ export default function LocationSearch({ mode, currentLoc, onSelect, onClose, bo
                   </div>
                   <div style={{ flex:1, minWidth:0 }}>
                     <div style={{ fontWeight:600, fontSize:14, overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' }}>{p.short}</div>
-                    <div style={{ fontSize:12, color:'#888', marginTop:2, overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' }}>{p.label}</div>
+                    <div style={{ fontSize:12, color:'#888', marginTop:2, overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' }}>{p.sublabel || p.label}</div>
                   </div>
                 </div>
               ))}

@@ -121,7 +121,8 @@ class DriverAnim {
     this.cur=pos
     const bear = lerpAngle(this.fromB, this.toB, easeSmooth(raw))
     const icon = this.el?.querySelector('.drv-icon')
-    if (icon) icon.style.transform = `rotate(${bear}deg)`
+    // 🛵 emoji faces left (West), so offset +90° so it faces direction of travel
+    if (icon) icon.style.transform = `rotate(${bear + 90}deg)`
     if (raw<1) { this.rafId=requestAnimationFrame(ts2=>this._step(ts2)) }
     else { this.cur=this.to; this.bearing=this.toB; this.rafId=null; if(this.queue.length) this._next() }
   }
@@ -129,7 +130,10 @@ class DriverAnim {
   teleport(lng,lat) {
     this.cur=[lng,lat]; this.from=[lng,lat]
     this.queue=[]; this.hist=[[lng,lat]]
+    this.bearing=90  // default: face East (right)
     if(this.mk) this.mk.setLngLat([lng,lat])
+    const icon = this.el?.querySelector('.drv-icon')
+    if(icon) icon.style.transform = 'rotate(90deg)'
   }
   destroy() {
     if(this.rafId) cancelAnimationFrame(this.rafId)
@@ -337,7 +341,7 @@ function driverHtml() {
   return `
     <style>
       .drv-wrap{position:relative;width:54px;height:54px}
-      .drv-icon{width:54px;height:54px;display:flex;align-items:center;justify-content:center;transition:transform 0.3s ease-out;will-change:transform;transform-origin:center}
+      .drv-icon{width:54px;height:54px;display:flex;align-items:center;justify-content:center;will-change:transform;transform-origin:center}
       .drv-inner{width:48px;height:48px;border-radius:50%;background:linear-gradient(145deg,#FF5F1F,#FF9500);display:flex;align-items:center;justify-content:center;font-size:24px;border:3px solid rgba(255,255,255,0.95);box-shadow:0 0 0 4px rgba(255,95,31,0.2),0 6px 20px rgba(255,95,31,0.4)}
       @keyframes drPulse{0%{box-shadow:0 0 0 0 rgba(255,95,31,0.5)}70%{box-shadow:0 0 0 12px rgba(255,95,31,0)}100%{box-shadow:0 0 0 0 rgba(255,95,31,0)}}
       .drv-inner{animation:drPulse 2s ease infinite}

@@ -208,12 +208,25 @@ function FareSelector({ fareOptions, selectedId, onSelect, driverInfo, nearbyByT
               <div style={{ fontSize:26, width:40, textAlign:'center', flexShrink:0 }}>{f.emoji}</div>
 
               <div style={{ flex:1, minWidth:0 }}>
-                <div style={{ display:'flex', alignItems:'center', gap:6, flexWrap:'wrap' }}>
+                <div style={{ display:'flex', alignItems:'center', gap:5, flexWrap:'wrap' }}>
                   <span style={{ fontSize:14, fontWeight:700, color:'#111' }}>{f.vehicleName}</span>
                   <span style={{ fontSize:11, color:'#bbb' }}>👤{f.seats}</span>
                   {arrivalEta !== null && (
                     <span style={{ fontSize:11, background:'#ECFDF5', color:'#16A34A', padding:'1px 7px', borderRadius:6, fontWeight:700 }}>
                       {arrivalEta} min
+                    </span>
+                  )}
+                  {/* Driver availability badge per vehicle type */}
+                  {nearbyByType?.[f.vehicleId] ? (
+                    <span style={{ fontSize:10, background:'#F0FDF4', color:'#16A34A', padding:'2px 7px', borderRadius:6, fontWeight:700, display:'flex', alignItems:'center', gap:3 }}>
+                      <span style={{ width:5, height:5, borderRadius:'50%', background:'#22C55E', display:'inline-block', animation:'pulse 1.5s ease infinite' }} />
+                      {nearbyByType[f.vehicleId].isDemo
+                        ? `${nearbyByType[f.vehicleId].distKm?.toFixed(1) || '?'} km`
+                        : `${nearbyByType[f.vehicleId].distKm?.toFixed(1) || '?'} km`}
+                    </span>
+                  ) : (
+                    <span style={{ fontSize:10, background:'#FEF2F2', color:'#EF4444', padding:'2px 7px', borderRadius:6, fontWeight:700 }}>
+                      No driver
                     </span>
                   )}
                   {f.baseFareApplied && (
