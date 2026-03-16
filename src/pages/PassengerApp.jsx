@@ -276,7 +276,7 @@ export default function PassengerApp() {
       )}
 
       {/* -- TABS -- */}
-      {tab==='home' && <PassengerHome onMenu={()=>setSidebar(true); window.history.pushState({ jcTab:'sidebar' }, '')} />}
+      {tab==='home' && <PassengerHome onMenu={() => { setSidebar(true); window.history.pushState({ jcTab:'sidebar' }, '') }} />}
 
       {tab==='history' && (
         <div className="screen scroll" style={{ overflowY:'auto' }}>
