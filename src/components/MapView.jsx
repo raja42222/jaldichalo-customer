@@ -1,71 +1,46 @@
 import { useEffect, useRef } from 'react'
 
 /* ================================================================
-   JALDI CHALO — MapView with Uber-style smooth driver animation
-   ----------------------------------------------------------------
-   Tech: MapLibre GL JS (not Leaflet — we use MapLibre for better
-   mobile performance and vector tile support)
-
-   Driver Animation System:
-   1. Position queue   — chain GPS updates smoothly, no snapping
-   2. Bearing calc     — marker rotates to face direction of travel
-   3. Catmull-Rom spline — organic curves, not straight lines
-   4. Speed-adaptive duration — matches actual GPS update interval
-   5. Velocity prediction — continuous movement between GPS updates
-   6. Visibility API   — pause animation when tab is hidden (battery)
-   7. RAF-based 60fps  — smooth frame-by-frame movement
+   JALDI CHALO — MapView v5.0
+   Full-screen, Rapido-style map with:
+   - Truly full-screen (position:absolute inset:0)
+   - Smooth Uber-style driver animation (queue + bearing + spline)
+   - Proper geolocation with accuracy circle
+   - Route line (pickup→drop) with orange glow
+   - Nearby driver dots with animation
+   - onReady callback for skeleton dismiss
 ================================================================ */
 
 const MAP_STYLE = 'https://basemaps.cartocdn.com/gl/positron-gl-style/style.json'
 const ML_JS     = 'https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.js'
 const ML_CSS    = 'https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.css'
 
-/* -- Math helpers ----------------------------------------------- */
-const lerp     = (a, b, t) => a + (b - a) * t
-
-/* easeOutCubic: fast start, smooth end — correct for moving vehicle */
-const easeOut  = t => 1 - Math.pow(1 - t, 3)
-
-/* easeInOutSine: smooth for short distances (< 50m) */
+/* -- Math ------------------------------------------------------- */
+const lerp = (a, b, t) => a + (b - a) * t
+const easeOut = t => 1 - Math.pow(1 - t, 3)
 const easeSmooth = t => -(Math.cos(Math.PI * t) - 1) / 2
+const emptyGJ = () => ({ type:'Feature', geometry:{ type:'LineString', coordinates:[] } })
 
-const emptyGJ  = () => ({ type: 'Feature', geometry: { type: 'LineString', coordinates: [] } })
-
-/* -- Bearing calculation (degrees, 0=North, clockwise) ----------- */
-function calcBearing(fromLng, fromLat, toLng, toLat) {
-  const dLng = (toLng - fromLng) * Math.PI / 180
-  const lat1 = fromLat * Math.PI / 180
-  const lat2 = toLat   * Math.PI / 180
-  const y    = Math.sin(dLng) * Math.cos(lat2)
-  const x    = Math.cos(lat1) * Math.sin(lat2) - Math.sin(lat1) * Math.cos(lat2) * Math.cos(dLng)
-  return ((Math.atan2(y, x) * 180 / Math.PI) + 360) % 360
+function haversineM(lng1, lat1, lng2, lat2) {
+  const R = 6371000
+  const dLat = (lat2-lat1)*Math.PI/180
+  const dLng = (lng2-lng1)*Math.PI/180
+  const a = Math.sin(dLat/2)**2 + Math.cos(lat1*Math.PI/180)*Math.cos(lat2*Math.PI/180)*Math.sin(dLng/2)**2
+  return R*2*Math.atan2(Math.sqrt(a), Math.sqrt(1-a))
 }
 
-/* -- Shortest angle lerp (handles 359° → 1° correctly) ------------ */
+function calcBearing(lng1, lat1, lng2, lat2) {
+  const dLng = (lng2-lng1)*Math.PI/180
+  const y = Math.sin(dLng)*Math.cos(lat2*Math.PI/180)
+  const x = Math.cos(lat1*Math.PI/180)*Math.sin(lat2*Math.PI/180) - Math.sin(lat1*Math.PI/180)*Math.cos(lat2*Math.PI/180)*Math.cos(dLng)
+  return ((Math.atan2(y,x)*180/Math.PI)+360)%360
+}
+
 function lerpAngle(a, b, t) {
-  let diff = ((b - a + 540) % 360) - 180
-  return a + diff * t
+  return a + (((b-a+540)%360)-180)*t
 }
 
-/* -- Haversine distance in meters ------------------------------- */
-function distMeters(lng1, lat1, lng2, lat2) {
-  const R    = 6371000
-  const dLat = (lat2 - lat1) * Math.PI / 180
-  const dLng = (lng2 - lng1) * Math.PI / 180
-  const a    = Math.sin(dLat/2)**2 + Math.cos(lat1*Math.PI/180) * Math.cos(lat2*Math.PI/180) * Math.sin(dLng/2)**2
-  return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a))
-}
-
-/* -- Catmull-Rom spline point (p0,p1 = control, p2,p3 = endpoints) */
-function catmullRom(p0, p1, p2, p3, t) {
-  const t2 = t * t, t3 = t2 * t
-  return [
-    0.5 * ((2*p1[0]) + (-p0[0]+p2[0])*t + (2*p0[0]-5*p1[0]+4*p2[0]-p3[0])*t2 + (-p0[0]+3*p1[0]-3*p2[0]+p3[0])*t3),
-    0.5 * ((2*p1[1]) + (-p0[1]+p2[1])*t + (2*p0[1]-5*p1[1]+4*p2[1]-p3[1])*t2 + (-p0[1]+3*p1[1]-3*p2[1]+p3[1])*t3),
-  ]
-}
-
-/* -- MapLibre global loader --------------------------------------- */
+/* -- MapLibre loader -------------------------------------------- */
 let mlReady = false, mlCbs = []
 function ensureML(cb) {
   if (mlReady) { cb(); return }
@@ -73,407 +48,306 @@ function ensureML(cb) {
   if (mlCbs.length > 1) return
   if (!document.querySelector('link[data-ml]')) {
     const l = document.createElement('link')
-    l.rel = 'stylesheet'; l.href = ML_CSS; l.dataset.ml = '1'
+    l.rel='stylesheet'; l.href=ML_CSS; l.dataset.ml='1'
     document.head.appendChild(l)
   }
   const s = document.createElement('script')
-  s.src = ML_JS; s.async = true
-  s.onload = () => { mlReady = true; mlCbs.forEach(fn => fn()); mlCbs = [] }
+  s.src=ML_JS; s.async=true
+  s.onload = () => { mlReady=true; mlCbs.forEach(fn=>fn()); mlCbs=[] }
   document.head.appendChild(s)
 }
 
-/* ================================================================
-   DRIVER ANIMATION ENGINE
-   Manages smooth movement with position queue + bearing + spline
-================================================================ */
-class DriverAnimator {
+/* -- Driver animation engine ------------------------------------ */
+class DriverAnim {
   constructor() {
-    this.marker    = null     // MapLibre Marker
-    this.markerEl  = null     // DOM element (for rotation)
-    this.queue     = []       // pending positions: [{lng, lat, ts}]
-    this.current   = null     // current [lng, lat]
-    this.fromPos   = null     // animation start [lng, lat]
-    this.toPos     = null     // animation target [lng, lat]
-    this.bearing   = 0        // current heading in degrees
-    this.fromBear  = 0        // animation start bearing
-    this.toBear    = 0        // animation target bearing
-    this.history   = []       // last 4 positions for Catmull-Rom
-    this.rafId     = null
-    this.startTs   = null
-    this.duration  = 1800     // ms — adapts to GPS interval
-    this.lastGpsTs = 0        // timestamp of last GPS update
-    this.paused    = false
-    this._onVisible = this._onVisible.bind(this)
-    document.addEventListener('visibilitychange', this._onVisible)
+    this.mk=null; this.el=null
+    this.queue=[]; this.cur=null
+    this.from=null; this.to=null
+    this.bearing=0; this.fromB=0; this.toB=0
+    this.hist=[]; this.rafId=null
+    this.startTs=null; this.dur=1800
+    this.lastGpsTs=0; this.paused=false
+    this._vis = this._vis.bind(this)
+    document.addEventListener('visibilitychange', this._vis)
   }
-
-  _onVisible() {
-    if (document.hidden) {
-      this.paused = true
-      if (this.rafId) { cancelAnimationFrame(this.rafId); this.rafId = null }
-    } else {
-      this.paused = false
-      if (this.fromPos && this.toPos) this._startRaf()
-    }
+  _vis() {
+    if (document.hidden) { this.paused=true; if(this.rafId){cancelAnimationFrame(this.rafId);this.rafId=null} }
+    else { this.paused=false; if(this.from&&this.to) this._raf() }
   }
-
-  /* Add new GPS position to queue */
   push(lng, lat) {
     const now = Date.now()
-    // Ignore if essentially same position (< 2 meters moved)
-    if (this.current) {
-      const d = distMeters(this.current[0], this.current[1], lng, lat)
-      if (d < 2) return
-    }
-
-    // Adapt animation duration to actual GPS interval
-    if (this.lastGpsTs > 0) {
-      const interval   = now - this.lastGpsTs
-      this.duration    = Math.min(interval * 0.92, 2500)  // 92% of interval, max 2.5s
-    }
+    if (this.cur && haversineM(this.cur[0],this.cur[1],lng,lat)<2) return
+    if (this.lastGpsTs>0) this.dur = Math.min((now-this.lastGpsTs)*0.92, 2500)
     this.lastGpsTs = now
-
-    this.queue.push({ lng, lat })
-
-    // If not animating, start immediately
-    if (!this.rafId && !this.paused) this._nextAnim()
+    this.queue.push([lng,lat])
+    if (!this.rafId && !this.paused) this._next()
   }
-
-  _nextAnim() {
-    if (!this.queue.length || !this.marker) return
-
-    const next     = this.queue.shift()
-    const from     = this.current || [next.lng, next.lat]
-
-    this.fromPos   = from
-    this.toPos     = [next.lng, next.lat]
-    this.fromBear  = this.bearing
-    this.toBear    = calcBearing(from[0], from[1], next.lng, next.lat)
-
-    // Update history for Catmull-Rom (keep last 4)
-    this.history.push([...from])
-    if (this.history.length > 4) this.history.shift()
-
-    // If very short distance (< 10m), use faster smooth easing
-    const dist = distMeters(from[0], from[1], next.lng, next.lat)
-    if (dist < 10) this.duration = Math.min(this.duration, 600)
-
-    this.startTs   = null
-    this._startRaf()
+  _next() {
+    if (!this.queue.length||!this.mk) return
+    const [lng,lat] = this.queue.shift()
+    const from = this.cur||[lng,lat]
+    this.from=from; this.to=[lng,lat]
+    this.fromB=this.bearing
+    this.toB = calcBearing(from[0],from[1],lng,lat)
+    this.hist.push([...from])
+    if (this.hist.length>4) this.hist.shift()
+    if (haversineM(from[0],from[1],lng,lat)<10) this.dur=Math.min(this.dur,600)
+    this.startTs=null; this._raf()
   }
-
-  _startRaf() {
+  _raf() {
     if (this.rafId) cancelAnimationFrame(this.rafId)
-    this.rafId = requestAnimationFrame(ts => this._step(ts))
+    this.rafId = requestAnimationFrame(ts=>this._step(ts))
   }
-
   _step(ts) {
-    if (this.paused || !this.marker || !this.fromPos || !this.toPos) return
-
-    if (!this.startTs) this.startTs = ts
-    const elapsed = ts - this.startTs
-    const raw     = Math.min(elapsed / this.duration, 1)
-
-    // Choose easing based on speed/distance
-    const dist = distMeters(this.fromPos[0], this.fromPos[1], this.toPos[0], this.toPos[1])
-    const t    = dist < 30 ? easeSmooth(raw) : easeOut(raw)
-
+    if (this.paused||!this.mk||!this.from||!this.to) return
+    if (!this.startTs) this.startTs=ts
+    const raw = Math.min((ts-this.startTs)/this.dur, 1)
+    const dist = haversineM(this.from[0],this.from[1],this.to[0],this.to[1])
+    const t = dist<30 ? easeSmooth(raw) : easeOut(raw)
+    // Catmull-Rom spline for smooth curves
     let pos
-    // Use Catmull-Rom spline if we have enough history (organic curves)
-    if (this.history.length >= 3) {
-      const h = this.history
-      const p0 = h[h.length-2] || h[0]
-      const p1 = h[h.length-1]
-      const p2 = this.toPos
-      // Extrapolate p3 beyond p2 for smooth continuation
-      const p3 = [
-        p2[0] + (p2[0] - p1[0]),
-        p2[1] + (p2[1] - p1[1]),
+    if (this.hist.length>=3) {
+      const h=this.hist, p0=h[h.length-2]||h[0], p1=h[h.length-1], p2=this.to
+      const p3=[p2[0]+(p2[0]-p1[0]), p2[1]+(p2[1]-p1[1])]
+      const t2=t*t, t3=t2*t
+      pos=[
+        0.5*((2*p1[0])+(-p0[0]+p2[0])*t+(2*p0[0]-5*p1[0]+4*p2[0]-p3[0])*t2+(-p0[0]+3*p1[0]-3*p2[0]+p3[0])*t3),
+        0.5*((2*p1[1])+(-p0[1]+p2[1])*t+(2*p0[1]-5*p1[1]+4*p2[1]-p3[1])*t2+(-p0[1]+3*p1[1]-3*p2[1]+p3[1])*t3),
       ]
-      pos = catmullRom(p0, p1, p2, p3, t)
     } else {
-      // Fallback: linear lerp
-      pos = [lerp(this.fromPos[0], this.toPos[0], t), lerp(this.fromPos[1], this.toPos[1], t)]
+      pos=[lerp(this.from[0],this.to[0],t), lerp(this.from[1],this.to[1],t)]
     }
-
-    // Smooth bearing interpolation (no 359→1 jump)
-    const bear = lerpAngle(this.fromBear, this.toBear, easeSmooth(raw))
-
-    // Apply position
-    this.marker.setLngLat(pos)
-    this.current = pos
-
-    // Apply rotation via CSS transform on the inner element
-    if (this.markerEl) {
-      const inner = this.markerEl.querySelector('.driver-icon')
-      if (inner) inner.style.transform = `rotate(${bear}deg)`
-    }
-
-    if (raw < 1) {
-      this.rafId = requestAnimationFrame(ts2 => this._step(ts2))
-    } else {
-      // Animation complete
-      this.current = this.toPos
-      this.bearing = this.toBear
-      this.rafId   = null
-      // Process next in queue
-      if (this.queue.length) this._nextAnim()
-    }
+    this.mk.setLngLat(pos)
+    this.cur=pos
+    const bear = lerpAngle(this.fromB, this.toB, easeSmooth(raw))
+    const icon = this.el?.querySelector('.drv-icon')
+    if (icon) icon.style.transform = `rotate(${bear}deg)`
+    if (raw<1) { this.rafId=requestAnimationFrame(ts2=>this._step(ts2)) }
+    else { this.cur=this.to; this.bearing=this.toB; this.rafId=null; if(this.queue.length) this._next() }
   }
-
-  /* Set marker reference */
-  attach(marker, el) {
-    this.marker   = marker
-    this.markerEl = el
+  attach(mk,el) { this.mk=mk; this.el=el }
+  teleport(lng,lat) {
+    this.cur=[lng,lat]; this.from=[lng,lat]
+    this.queue=[]; this.hist=[[lng,lat]]
+    if(this.mk) this.mk.setLngLat([lng,lat])
   }
-
-  /* Teleport (first appearance, no animation) */
-  teleport(lng, lat) {
-    this.current   = [lng, lat]
-    this.fromPos   = [lng, lat]
-    this.queue     = []
-    this.history   = [[lng, lat]]
-    if (this.marker) this.marker.setLngLat([lng, lat])
-  }
-
-  /* Remove and clean up */
   destroy() {
-    if (this.rafId) cancelAnimationFrame(this.rafId)
-    document.removeEventListener('visibilitychange', this._onVisible)
-    this.marker = null; this.markerEl = null
-    this.queue  = []; this.history = []
-    this.rafId  = null
+    if(this.rafId) cancelAnimationFrame(this.rafId)
+    document.removeEventListener('visibilitychange',this._vis)
+    this.mk=null; this.el=null; this.queue=[]; this.hist=[]; this.rafId=null
   }
 }
 
 /* ================================================================
-   MAPVIEW COMPONENT
+   COMPONENT
 ================================================================ */
 export default function MapView({
   center, pickupCoords, dropCoords,
   driverCoords, nearbyDrivers,
-  showRoute, zoom = 14, bottomPad = 300,
+  showRoute, zoom=14, bottomPad=180,
   onReady,
 }) {
-  const divRef      = useRef(null)
-  const mapRef      = useRef(null)
-  const pins        = useRef({})          // pickup + drop markers
-  const nearbyMks   = useRef({})          // nearby driver dots
-  const driverAnim  = useRef(new DriverAnimator())
-  const lastRoute   = useRef('')
-  const ready       = useRef(false)
-  const alive       = useRef(true)
+  const divRef    = useRef(null)
+  const mapRef    = useRef(null)
+  const pins      = useRef({})
+  const nearbyMks = useRef({})
+  const drvAnim   = useRef(new DriverAnim())
+  const lastRoute = useRef('')
+  const ready     = useRef(false)
+  const alive     = useRef(true)
 
-  /* -- Mount / unmount ------------------------------------------ */
+  /* -- Mount -- */
   useEffect(() => {
     alive.current = true
-    ensureML(() => { if (alive.current && divRef.current) initMap() })
+    ensureML(() => { if(alive.current && divRef.current) initMap() })
     return () => {
       alive.current = false
-      driverAnim.current.destroy()
-      Object.values(pins.current).forEach(m => { try { m.remove() } catch {} })
-      Object.values(nearbyMks.current).forEach(m => { try { m.remove() } catch {} })
-      pins.current = {}; nearbyMks.current = {}
-      if (mapRef.current) { try { mapRef.current.remove() } catch {} mapRef.current = null; ready.current = false }
+      drvAnim.current.destroy()
+      Object.values(pins.current).forEach(m => { try{m.remove()}catch{} })
+      Object.values(nearbyMks.current).forEach(m => { try{m.remove()}catch{} })
+      pins.current={}; nearbyMks.current={}
+      if(mapRef.current) { try{mapRef.current.remove()}catch{}; mapRef.current=null; ready.current=false }
     }
   }, []) // eslint-disable-line
 
   function initMap() {
-    if (mapRef.current || !divRef.current || !window.maplibregl) return
-    const lat = center?.[0] ?? 22.5726
-    const lng = center?.[1] ?? 88.3639
+    if(mapRef.current||!divRef.current||!window.maplibregl) return
+    const lat=center?.[0]??22.5726, lng=center?.[1]??88.3639
     const map = new window.maplibregl.Map({
-      container: divRef.current, style: MAP_STYLE,
-      center: [lng, lat], zoom, maxZoom: 19, attributionControl: false,
+      container:divRef.current, style:MAP_STYLE,
+      center:[lng,lat], zoom, maxZoom:19, attributionControl:false,
+      pitchWithRotate:false, dragRotate:false,
     })
-    map.addControl(new window.maplibregl.NavigationControl({ showCompass: false }), 'bottom-right')
+    // Hide default attribution clutter
+    map.addControl(new window.maplibregl.AttributionControl({ compact:true }), 'bottom-left')
     map.on('load', () => {
-      if (!alive.current) return
-      map.addSource('route', { type: 'geojson', data: emptyGJ() })
-      map.addLayer({ id:'route-glow',   type:'line', source:'route', layout:{'line-join':'round','line-cap':'round'}, paint:{'line-color':'#FF5F1F','line-width':14,'line-opacity':0.12,'line-blur':8} })
-      map.addLayer({ id:'route-casing', type:'line', source:'route', layout:{'line-join':'round','line-cap':'round'}, paint:{'line-color':'#ffffff','line-width':8,'line-opacity':0.85} })
+      if(!alive.current) return
+      // Route layers
+      map.addSource('route', { type:'geojson', data:emptyGJ() })
+      map.addLayer({ id:'route-glow',   type:'line', source:'route', layout:{'line-join':'round','line-cap':'round'}, paint:{'line-color':'#FF5F1F','line-width':18,'line-opacity':0.10,'line-blur':10} })
+      map.addLayer({ id:'route-casing', type:'line', source:'route', layout:{'line-join':'round','line-cap':'round'}, paint:{'line-color':'#ffffff','line-width':9,'line-opacity':0.90} })
       map.addLayer({ id:'route-line',   type:'line', source:'route', layout:{'line-join':'round','line-cap':'round'}, paint:{'line-color':'#FF5F1F','line-width':5,'line-opacity':1} })
-      mapRef.current = map; ready.current = true
+      // Dashed preview layer (shown before booking)
+      map.addSource('route-preview', { type:'geojson', data:emptyGJ() })
+      map.addLayer({ id:'route-preview', type:'line', source:'route-preview', layout:{'line-join':'round','line-cap':'round'}, paint:{'line-color':'#FF5F1F','line-width':3,'line-opacity':0.5,'line-dasharray':[4,4]} })
+      mapRef.current=map; ready.current=true
+      if(onReady) onReady()
       syncAll()
-      if (onReady) onReady()
     })
   }
 
-  /* -- Re-sync on prop changes ----------------------------------- */
-  useEffect(() => { if (ready.current) syncAll() },
-    [center, pickupCoords, dropCoords, driverCoords, nearbyDrivers, showRoute]) // eslint-disable-line
+  /* -- Sync on prop change -- */
+  useEffect(() => { if(ready.current) syncAll() },
+    [center,pickupCoords,dropCoords,driverCoords,nearbyDrivers,showRoute,bottomPad]) // eslint-disable-line
 
   function syncAll() {
-    if (!mapRef.current || !ready.current) return
+    if(!mapRef.current||!ready.current) return
     syncCenter()
     syncPin('pickup', pickupCoords, pickupHtml())
     syncPin('drop',   dropCoords,   dropHtml())
-    syncDriverMarker(driverCoords)
-    syncNearby(nearbyDrivers || [])
+    syncDriver(driverCoords)
+    syncNearby(nearbyDrivers||[])
     syncRoute()
     syncBounds()
   }
 
   function syncCenter() {
-    if (!center || pickupCoords || dropCoords) return
-    mapRef.current.flyTo({ center: [center[1], center[0]], zoom, speed: 1.2 })
+    if(!center||pickupCoords||dropCoords) return
+    mapRef.current.easeTo({ center:[center[1],center[0]], zoom, duration:600 })
   }
 
-  /* Static pins (pickup / drop) */
+  /* Static pins */
   function syncPin(key, coords, html) {
     const ml = window.maplibregl
-    if (!coords) {
-      pins.current[key]?.remove()
-      delete pins.current[key]
-      return
-    }
-    const ll = [coords[1], coords[0]]
-    if (pins.current[key]) { pins.current[key].setLngLat(ll); return }
-    const el = document.createElement('div'); el.innerHTML = html
-    pins.current[key] = new ml.Marker({ element: el, anchor: 'center' }).setLngLat(ll).addTo(mapRef.current)
+    if(!coords) { pins.current[key]?.remove(); delete pins.current[key]; return }
+    const ll=[coords[1],coords[0]]
+    if(pins.current[key]) { pins.current[key].setLngLat(ll); return }
+    const el=document.createElement('div'); el.innerHTML=html
+    pins.current[key] = new ml.Marker({element:el,anchor:'center'}).setLngLat(ll).addTo(mapRef.current)
   }
 
-  /* -- Driver marker with full animation engine ---------------- */
-  function syncDriverMarker(coords) {
-    const ml   = window.maplibregl
-    const anim = driverAnim.current
-    if (!ml || !mapRef.current) return
-
-    if (!coords) {
-      // Remove driver marker
-      if (anim.marker) { anim.marker.remove(); anim.destroy(); driverAnim.current = new DriverAnimator() }
+  /* Driver marker with smooth animation */
+  function syncDriver(coords) {
+    const ml=window.maplibregl, anim=drvAnim.current
+    if(!ml||!mapRef.current) return
+    if(!coords) {
+      if(anim.mk) { anim.mk.remove(); anim.destroy(); drvAnim.current=new DriverAnim() }
       return
     }
-
-    const lng = coords[1], lat = coords[0]
-
-    if (!anim.marker) {
-      // First appearance: create marker, teleport to position
-      const el  = document.createElement('div')
-      el.innerHTML = driverHtml()
-      const mk  = new ml.Marker({ element: el, anchor: 'center' })
-        .setLngLat([lng, lat])
-        .addTo(mapRef.current)
-      anim.attach(mk, el)
-      anim.teleport(lng, lat)
+    const [lat,lng] = coords
+    if(!anim.mk) {
+      const el=document.createElement('div'); el.innerHTML=driverHtml()
+      const mk=new ml.Marker({element:el,anchor:'center'}).setLngLat([lng,lat]).addTo(mapRef.current)
+      anim.attach(mk,el); anim.teleport(lng,lat)
     } else {
-      // Subsequent updates: push to animation queue
-      anim.push(lng, lat)
+      anim.push(lng,lat)
     }
   }
 
-  /* Nearby driver dots (idle state — no animation needed) */
+  /* Nearby dots */
   function syncNearby(drivers) {
-    const ml = window.maplibregl
-    Object.values(nearbyMks.current).forEach(m => { try { m.remove() } catch {} })
-    nearbyMks.current = {}
-    drivers.forEach(([lat, lng], i) => {
-      const el = document.createElement('div'); el.innerHTML = nearbyHtml(i)
-      nearbyMks.current[`nb_${i}`] = new ml.Marker({ element: el, anchor: 'center' })
-        .setLngLat([lng, lat]).addTo(mapRef.current)
+    const ml=window.maplibregl
+    Object.values(nearbyMks.current).forEach(m=>{try{m.remove()}catch{}})
+    nearbyMks.current={}
+    drivers.forEach(([lat,lng],i) => {
+      const el=document.createElement('div'); el.innerHTML=nearbyDotHtml(i)
+      nearbyMks.current[`nb${i}`]=new ml.Marker({element:el,anchor:'center'}).setLngLat([lng,lat]).addTo(mapRef.current)
     })
   }
 
-  /* OSRM route */
+  /* Route */
   async function syncRoute() {
-    if (!mapRef.current) return
-    if (!showRoute || !pickupCoords || !dropCoords) {
+    if(!mapRef.current) return
+    if(!showRoute||!pickupCoords||!dropCoords) {
       mapRef.current.getSource('route')?.setData(emptyGJ())
-      lastRoute.current = ''; return
+      mapRef.current.getSource('route-preview')?.setData(emptyGJ())
+      lastRoute.current=''; return
     }
-    const k = `${pickupCoords[0].toFixed(5)},${pickupCoords[1].toFixed(5)}|${dropCoords[0].toFixed(5)},${dropCoords[1].toFixed(5)}`
-    if (k === lastRoute.current) return; lastRoute.current = k
+    const k=`${pickupCoords[0].toFixed(5)},${pickupCoords[1].toFixed(5)}|${dropCoords[0].toFixed(5)},${dropCoords[1].toFixed(5)}`
+    if(k===lastRoute.current) return; lastRoute.current=k
+    // Show straight line immediately while fetching
+    const straight=[[pickupCoords[1],pickupCoords[0]],[dropCoords[1],dropCoords[0]]]
+    mapRef.current.getSource('route-preview')?.setData({type:'Feature',geometry:{type:'LineString',coordinates:straight}})
     try {
-      const url = `https://router.project-osrm.org/route/v1/driving/${pickupCoords[1]},${pickupCoords[0]};${dropCoords[1]},${dropCoords[0]}?overview=full&geometries=geojson`
-      const res = await fetch(url, { signal: AbortSignal.timeout(8000) })
-      if (!alive.current) return
-      const json = await res.json()
-      if (json.code !== 'Ok' || !json.routes?.length) throw new Error('no route')
-      const c = json.routes[0].geometry.coordinates
-      mapRef.current?.getSource('route')?.setData({ type: 'Feature', geometry: { type: 'LineString', coordinates: c } })
-      fitCoords(c)
+      const url=`https://router.project-osrm.org/route/v1/driving/${pickupCoords[1]},${pickupCoords[0]};${dropCoords[1]},${dropCoords[0]}?overview=full&geometries=geojson`
+      const res=await fetch(url, {signal:AbortSignal.timeout(8000)})
+      if(!alive.current) return
+      const json=await res.json()
+      if(json.code!=='Ok'||!json.routes?.length) throw new Error('no route')
+      const coords=json.routes[0].geometry.coordinates
+      mapRef.current?.getSource('route')?.setData({type:'Feature',geometry:{type:'LineString',coordinates:coords}})
+      mapRef.current?.getSource('route-preview')?.setData(emptyGJ()) // hide straight line
+      fitCoords(coords)
     } catch {
-      if (!alive.current) return
-      const fb = [[pickupCoords[1], pickupCoords[0]], [dropCoords[1], dropCoords[0]]]
-      mapRef.current?.getSource('route')?.setData({ type: 'Feature', geometry: { type: 'LineString', coordinates: fb } })
-      fitLngLats(fb)
+      if(!alive.current) return
+      mapRef.current?.getSource('route')?.setData({type:'Feature',geometry:{type:'LineString',coordinates:straight}})
+      mapRef.current?.getSource('route-preview')?.setData(emptyGJ())
+      fitLngLats(straight)
     }
   }
 
   function syncBounds() {
-    const pts = [pickupCoords, dropCoords].filter(Boolean)
-    if (pts.length === 2 && !showRoute) fitLngLats(pts.map(p => [p[1], p[0]]))
-    else if (pts.length === 1) mapRef.current.flyTo({ center: [pts[0][1], pts[0][0]], zoom: 15, speed: 1.4 })
+    const pts=[pickupCoords,dropCoords].filter(Boolean)
+    if(pts.length===2&&!showRoute) fitLngLats(pts.map(p=>[p[1],p[0]]))
+    else if(pts.length===1) mapRef.current.easeTo({center:[pts[0][1],pts[0][0]],zoom:15,duration:800})
   }
 
   function fitCoords(coords) {
-    if (!mapRef.current || !coords?.length) return
-    const ml = window.maplibregl
-    const b  = coords.reduce((b, c) => b.extend(c), new ml.LngLatBounds(coords[0], coords[0]))
-    mapRef.current.fitBounds(b, { padding: { top: 80, bottom: bottomPad, left: 48, right: 48 }, maxZoom: 16, duration: 900 })
+    if(!mapRef.current||!coords?.length) return
+    const ml=window.maplibregl
+    const b=coords.reduce((b,c)=>b.extend(c), new ml.LngLatBounds(coords[0],coords[0]))
+    mapRef.current.fitBounds(b, {padding:{top:100,bottom:bottomPad+60,left:60,right:60},maxZoom:16,duration:900})
   }
   function fitLngLats(arr) {
-    if (!mapRef.current || !arr?.length) return
-    const ml = window.maplibregl
-    const b  = arr.reduce((b, c) => b.extend(c), new ml.LngLatBounds(arr[0], arr[0]))
-    mapRef.current.fitBounds(b, { padding: { top: 80, bottom: bottomPad, left: 48, right: 48 }, maxZoom: 16, duration: 900 })
+    if(!mapRef.current||!arr?.length) return
+    const ml=window.maplibregl
+    const b=arr.reduce((b,c)=>b.extend(c), new ml.LngLatBounds(arr[0],arr[0]))
+    mapRef.current.fitBounds(b, {padding:{top:100,bottom:bottomPad+60,left:60,right:60},maxZoom:16,duration:900})
   }
 
-  return <div ref={divRef} style={{ width: '100%', height: '100%', background: '#e8e4dc' }} />
+  return (
+    <div ref={divRef} style={{ position:'absolute', inset:0, background:'#e8e4dc' }}>
+      <style>{`
+        .maplibregl-ctrl-bottom-left { bottom:${bottomPad+10}px !important; }
+        .maplibregl-ctrl-bottom-right { bottom:${bottomPad+10}px !important; }
+        .maplibregl-ctrl-top-right { display:none; }
+      `}</style>
+    </div>
+  )
 }
 
-/* ================================================================
-   MARKER HTML
-================================================================ */
+/* -- Marker HTML ------------------------------------------------- */
 function pickupHtml() {
-  return `<div style="position:relative;width:26px;height:26px;display:flex;align-items:center;justify-content:center;">
-    <style>@keyframes jcPls{0%{transform:scale(1);opacity:.6}70%{transform:scale(2.3);opacity:0}100%{opacity:0}}</style>
-    <div style="position:absolute;inset:-5px;border-radius:50%;border:2px solid rgba(34,197,94,0.55);animation:jcPls 2.2s ease-out infinite;pointer-events:none;"></div>
-    <div style="width:22px;height:22px;border-radius:50%;background:#22C55E;border:3px solid #fff;box-shadow:0 0 0 3px rgba(34,197,94,0.18),0 4px 14px rgba(0,0,0,0.22);"></div>
-  </div>`
-}
-
-function dropHtml() {
-  return `<div style="display:flex;flex-direction:column;align-items:center;">
-    <div style="width:24px;height:24px;border-radius:50%;background:#F97316;border:3px solid #fff;box-shadow:0 0 0 3px rgba(249,115,22,0.18),0 4px 14px rgba(0,0,0,0.22);"></div>
-    <div style="width:3px;height:10px;background:#F97316;border-radius:0 0 3px 3px;margin-top:-2px;"></div>
-  </div>`
-}
-
-function driverHtml() {
-  /* driver-icon class is used by DriverAnimator to apply CSS rotation */
   return `
-    <style>
-      .driver-marker { position:relative; width:52px; height:52px; }
-      .driver-icon {
-        width:52px; height:52px;
-        display:flex; align-items:center; justify-content:center;
-        /* transition makes bearing changes smooth at 60fps */
-        transition: transform 0.3s ease-out;
-        will-change: transform;
-        transform-origin: center center;
-      }
-      .driver-inner {
-        width:46px; height:46px; border-radius:50%;
-        background: linear-gradient(145deg,#FF5F1F,#FF9500);
-        display:flex; align-items:center; justify-content:center;
-        font-size:22px;
-        border:2.5px solid rgba(255,255,255,0.95);
-        box-shadow: 0 0 0 4px rgba(255,95,31,0.2), 0 6px 20px rgba(255,95,31,0.35);
-      }
-      @keyframes drPulse{0%{box-shadow:0 0 0 0 rgba(255,95,31,0.45)}70%{box-shadow:0 0 0 10px rgba(255,95,31,0)}100%{box-shadow:0 0 0 0 rgba(255,95,31,0)}}
-      .driver-inner { animation: drPulse 2.2s ease infinite; }
-    </style>
-    <div class="driver-marker">
-      <div class="driver-icon">
-        <div class="driver-inner">🛵</div>
-      </div>
+    <style>@keyframes jcPing{0%{transform:scale(1);opacity:.7}70%{transform:scale(2.4);opacity:0}100%{opacity:0}}</style>
+    <div style="position:relative;width:28px;height:28px;display:flex;align-items:center;justify-content:center">
+      <div style="position:absolute;inset:-6px;border-radius:50%;border:2px solid rgba(34,197,94,0.6);animation:jcPing 2s ease-out infinite;pointer-events:none"></div>
+      <div style="width:24px;height:24px;border-radius:50%;background:#22C55E;border:3px solid #fff;box-shadow:0 2px 8px rgba(34,197,94,0.5),0 4px 14px rgba(0,0,0,0.2)"></div>
     </div>`
 }
 
-function nearbyHtml(idx) {
-  const d = ((idx * 0.4) % 1.6).toFixed(1)
+function dropHtml() {
   return `
-    <style>@keyframes nbBob{0%,100%{transform:translateY(0)}50%{transform:translateY(-4px)}}</style>
-    <div style="width:32px;height:32px;border-radius:50%;background:linear-gradient(145deg,#FF8C00,#FFAA44);display:flex;align-items:center;justify-content:center;font-size:16px;border:2px solid rgba(255,255,255,0.9);box-shadow:0 2px 10px rgba(255,140,0,0.28);opacity:0.82;animation:nbBob 2s ease-in-out ${d}s infinite;will-change:transform;">🛵</div>`
+    <div style="display:flex;flex-direction:column;align-items:center;filter:drop-shadow(0 4px 8px rgba(0,0,0,0.3))">
+      <div style="width:26px;height:26px;border-radius:50% 50% 50% 0;background:#F97316;border:3px solid #fff;transform:rotate(-45deg)"></div>
+    </div>`
+}
+
+function driverHtml() {
+  return `
+    <style>
+      .drv-wrap{position:relative;width:54px;height:54px}
+      .drv-icon{width:54px;height:54px;display:flex;align-items:center;justify-content:center;transition:transform 0.3s ease-out;will-change:transform;transform-origin:center}
+      .drv-inner{width:48px;height:48px;border-radius:50%;background:linear-gradient(145deg,#FF5F1F,#FF9500);display:flex;align-items:center;justify-content:center;font-size:24px;border:3px solid rgba(255,255,255,0.95);box-shadow:0 0 0 4px rgba(255,95,31,0.2),0 6px 20px rgba(255,95,31,0.4)}
+      @keyframes drPulse{0%{box-shadow:0 0 0 0 rgba(255,95,31,0.5)}70%{box-shadow:0 0 0 12px rgba(255,95,31,0)}100%{box-shadow:0 0 0 0 rgba(255,95,31,0)}}
+      .drv-inner{animation:drPulse 2s ease infinite}
+    </style>
+    <div class="drv-wrap"><div class="drv-icon"><div class="drv-inner">🛵</div></div></div>`
+}
+
+function nearbyDotHtml(i) {
+  const d=((i*0.4)%1.6).toFixed(1)
+  return `
+    <style>@keyframes nbFloat{0%,100%{transform:translateY(0)}50%{transform:translateY(-4px)}}</style>
+    <div style="width:34px;height:34px;border-radius:50%;background:linear-gradient(145deg,#FF8C00,#FFAA44);display:flex;align-items:center;justify-content:center;font-size:17px;border:2px solid rgba(255,255,255,0.9);box-shadow:0 2px 10px rgba(255,140,0,0.3);opacity:0.85;animation:nbFloat 2s ease-in-out ${d}s infinite;will-change:transform">🛵</div>`
 }
