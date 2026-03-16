@@ -414,3 +414,12 @@ input, textarea { user-select: text; -webkit-user-select: text; }
   width: 90px; height: 90px; border-radius: 50%;
   background: rgba(255,255,255,0.08);
 }
+
+.map-btn {
+  width: 46px; height: 46px; border-radius: 50%;
+  background: #fff; border: none; cursor: pointer;
+  display: flex; align-items: center; justify-content: center;
+  box-shadow: 0 3px 14px rgba(0,0,0,0.22); color: var(--text);
+  transition: transform 0.15s, box-shadow 0.15s;
+}
+.map-btn:active { transform: scale(0.90); box-shadow: 0 1px 6px rgba(0,0,0,0.15); }
