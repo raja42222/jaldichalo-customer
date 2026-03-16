@@ -97,7 +97,7 @@ async function findDriversInRadius(pickupLat, pickupLng, radiusKm, vehicleType, 
       let q = supabase.from('drivers')
         .select('id,name,phone,vehicle_type,vehicle_model,vehicle_number,rating,acceptance_rate,current_lat,current_lng,last_seen,profile_photo_url,status')
         .eq('is_online', true)
-        .eq('status', 'approved')
+        .ilike('status', 'approved')
         .gte('current_lat', pickupLat - latD)
         .lte('current_lat', pickupLat + latD)
         .gte('current_lng', pickupLng - lngD)
