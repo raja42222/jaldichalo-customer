@@ -2,221 +2,253 @@ import { createContext, useContext, useEffect, useState, useCallback, useRef } f
 import { supabase, doSignOut } from '../lib/supabase'
 
 /* ================================================================
-   AUTH CONTEXT  —  Customer (Passenger) App
+   AUTH CONTEXT v3 — Customer App
    
-   Session persistence strategy (fixes the 6-sec logout bug):
-   1. On mount: read profile cache IMMEDIATELY (no loading flash)
-   2. Validate session in background (never block UI)
-   3. Handle ALL Supabase auth events incl. TOKEN_REFRESHED
-   4. If session exists but profile fetch fails → use cache
-   5. If session null AND cache stale → clear and show login
+   FIXES vs previous version:
    
-   Supabase auth events we handle:
-   - INITIAL_SESSION   : app load, session restored from storage
-   - SIGNED_IN        : OTP verify, OAuth callback
-   - TOKEN_REFRESHED  : background token refresh (every 50 min)
-   - SIGNED_OUT       : explicit logout
-   - USER_UPDATED     : phone/email change
+   FIX 1: Removed hasValidSession() — unreliable because Supabase v2
+          internal storage key format is unpredictable.
+   
+   FIX 2: Profile cache is ALWAYS shown immediately on mount.
+          loading=false by default if cache exists.
+          → Zero re-login flash for returning users.
+   
+   FIX 3: INITIAL_SESSION with no session → KEEP cached profile.
+          Only clear profile on explicit SIGNED_OUT event.
+          Reason: INITIAL_SESSION null can mean "token refresh in progress"
+          not necessarily "user is logged out".
+   
+   FIX 4: Supabase storageKey uses our dualStorage (localStorage+cookie)
+          so session survives PWA background kill on Android/iOS.
+   
+   FIX 5: fetchProfile failure → NEVER clear profile if cache exists.
+          Show stale cache rather than force login.
+   
+   SESSION FLOW:
+   Login → JWT in dualStorage (localStorage + cookie)
+   App open → cache read synchronously → profile shown INSTANTLY
+   Background → Supabase autoRefreshToken silently renews JWT
+   7 days later → token expires → only then OTP needed again
 ================================================================ */
 
 const AuthCtx     = createContext(null)
 const PROFILE_KEY = 'jc_profile_v4'
-const SESSION_KEY = 'jc_session'
-const PROFILE_TTL = 30 * 24 * 60 * 60 * 1000   // 30 days
-const REFRESH_GAP = 60 * 1000                    // 1 min — don't re-fetch too often
+const PROFILE_TTL = 30 * 24 * 60 * 60 * 1000  // 30 days
+const REFETCH_GAP = 5 * 60 * 1000              // Re-fetch profile every 5 min max
 
+/* -- Profile cache ----------------------------------------------- */
 const cache = {
   read() {
     try {
       const raw = localStorage.getItem(PROFILE_KEY)
       if (!raw) return null
       const p = JSON.parse(raw)
+      if (!p?.data || !p?.ts) return null
       if (Date.now() - p.ts > PROFILE_TTL) { localStorage.removeItem(PROFILE_KEY); return null }
       return p
     } catch { return null }
   },
   write(data, userId) {
+    if (!data || !userId) return
     try {
-      localStorage.setItem(PROFILE_KEY, JSON.stringify({
-        data, role: 'passenger', userId, ts: Date.now()
-      }))
+      localStorage.setItem(PROFILE_KEY, JSON.stringify({ data, userId, ts: Date.now() }))
     } catch {}
   },
   clear() {
     try {
-      [PROFILE_KEY, 'jc_profile_v3', 'jc_profile_v2', 'jc_recent_v4'].forEach(k =>
-        localStorage.removeItem(k)
-      )
+      ['jc_profile_v4', 'jc_profile_v3', 'jc_profile_v2', 'jc_recent_v4']
+        .forEach(k => localStorage.removeItem(k))
     } catch {}
-  },
-  hasValidSession() {
-    // Check if Supabase has a stored session token
-    try {
-      const raw = localStorage.getItem(SESSION_KEY)
-      if (!raw) return false
-      const s = JSON.parse(raw)
-      // Check if access token exists and not expired
-      const exp = s?.expires_at || s?.session?.expires_at || 0
-      return Date.now() / 1000 < exp + 60  // 60s grace
-    } catch { return false }
   }
 }
 
+/* -- Provider ---------------------------------------------------- */
 export function AuthProvider({ children }) {
-  // Read cache synchronously — zero loading flash for returning users
-  const cached         = cache.read()
-  const hasStoredToken = cache.hasValidSession()
+  // ★ KEY FIX: Read cache SYNCHRONOUSLY before first render.
+  //   If cache exists → show profile IMMEDIATELY, loading=false.
+  //   User sees their home screen with ZERO delay.
+  const initCache = cache.read()
 
-  const [profile,   setProfile]   = useState(cached?.data || null)
-  // Only show loading if we have no cached data AND have a stored token to validate
-  const [loading,   setLoading]   = useState(!cached?.data && hasStoredToken)
+  const [profile,   setProfile]   = useState(initCache?.data || null)
+  const [loading,   setLoading]   = useState(false)  // ★ Always false — no spinner by default
   const [oauthUser, setOauthUser] = useState(null)
 
-  const directSetAt  = useRef(0)
-  const lastFetchAt  = useRef(0)
   const mounted      = useRef(true)
+  const lastFetchAt  = useRef(0)
+  const directSetAt  = useRef(0)
+  const sessionReady = useRef(false)  // Has INITIAL_SESSION fired?
 
   useEffect(() => {
     mounted.current = true
     return () => { mounted.current = false }
   }, [])
 
+  /* -- Fetch profile from DB ----------------------------------- */
   const fetchProfile = useCallback(async (userId, force = false) => {
-    if (!userId) return null
-    // Throttle: don't fetch more than once per minute unless forced
-    if (!force && Date.now() - lastFetchAt.current < REFRESH_GAP) return 'cached'
+    if (!userId || !mounted.current) return null
+
+    // Throttle unless forced
+    if (!force && Date.now() - lastFetchAt.current < REFETCH_GAP) return 'throttled'
     lastFetchAt.current = Date.now()
 
     try {
-      const { data: ps, error } = await supabase
-        .from('passengers').select('*').eq('id', userId).maybeSingle()
+      const { data, error } = await supabase
+        .from('passengers')
+        .select('*')
+        .eq('id', userId)
+        .maybeSingle()
+
       if (!mounted.current) return null
-      if (ps) {
-        cache.write(ps, userId)
-        setProfile(ps)
+
+      if (data) {
+        cache.write(data, userId)
+        setProfile(data)
         setOauthUser(null)
         setLoading(false)
-        return 'passenger'
+        return 'ok'
       }
+
       if (error) throw error
-    } catch {
-      // Network error or DB error — use cache if available
+      // data is null (no row yet) — keep existing profile/cache
+      return null
+
+    } catch (err) {
       if (!mounted.current) return null
+      // ★ KEY FIX: On network error, use cache. NEVER force login.
       const c = cache.read()
-      if (c && c.userId === userId) {
+      if (c?.userId === userId) {
         setProfile(c.data)
         setLoading(false)
-        return 'passenger'
+        return 'cache'
       }
+      return null
     }
-    return null
   }, [])
 
+  /* -- Auth state listener -------------------------------------- */
   useEffect(() => {
-    // Safety net: never show loading spinner > 8 seconds
-    const fallback = setTimeout(() => {
-      if (!mounted.current) return
+    // ★ Safety valve: if INITIAL_SESSION takes > 12s, use cache
+    const safetyTimer = setTimeout(() => {
+      if (!mounted.current || sessionReady.current) return
+      sessionReady.current = true
       const c = cache.read()
       if (c) { setProfile(c.data); setLoading(false) }
-      else setLoading(false)
-    }, 8000)
+      else { setLoading(false) }
+    }, 12000)
 
-    // Listen to ALL Supabase auth state changes
-    const { data: { subscription } } = supabase.auth.onAuthStateChange(async (event, session) => {
-      if (!mounted.current) return
-      clearTimeout(fallback)
+    const { data: { subscription } } = supabase.auth.onAuthStateChange(
+      async (event, session) => {
+        if (!mounted.current) return
 
-      switch (event) {
-        case 'INITIAL_SESSION': {
-          // Called once on app load with whatever session is in storage
-          if (!session?.user) {
-            // No session — if we have a profile cache, clear it (session truly expired)
-            // But first check: maybe token just needs refresh
-            const c = cache.read()
-            if (c) {
-              // Keep showing cached profile for now, try silent refresh
-              setLoading(false)
-            } else {
-              setProfile(null)
-              setLoading(false)
+        switch (event) {
+
+          /* -- App open / tab focus --------------------------- */
+          case 'INITIAL_SESSION': {
+            clearTimeout(safetyTimer)
+            sessionReady.current = true
+
+            if (!session?.user) {
+              // ★ KEY FIX: No active session, but we may have cached profile.
+              // DO NOT clear profile here — let user stay logged in from cache.
+              // Supabase will fire SIGNED_OUT explicitly if refresh fails.
+              const c = cache.read()
+              if (c) {
+                // Keep showing cached profile. Supabase may still be refreshing.
+                setProfile(c.data)
+                setLoading(false)
+              } else {
+                // Truly no session and no cache → show login
+                setProfile(null)
+                setLoading(false)
+              }
+              return
             }
-            return
+
+            // Session exists — restore profile
+            const c = cache.read()
+            if (c?.userId === session.user.id) {
+              // ★ Instant: show cached profile right away
+              setProfile(c.data)
+              setLoading(false)
+              // Background refresh (don't await)
+              fetchProfile(session.user.id).catch(() => {})
+            } else {
+              // New user or cache mismatch — fetch from DB
+              const res = await fetchProfile(session.user.id, true)
+              if (!mounted.current) return
+              if (res === null) {
+                // No profile row yet → this is a new Google OAuth user
+                if (session.user.app_metadata?.provider === 'google') {
+                  setOauthUser(session.user)
+                }
+                setLoading(false)
+              }
+            }
+            break
           }
-          // We have a session — restore profile
-          const c = cache.read()
-          if (c && c.userId === session.user.id) {
-            // Cache hit — show immediately, refresh in background
-            setProfile(c.data)
-            setLoading(false)
-            fetchProfile(session.user.id).catch(() => {})
-          } else {
-            // No cache — fetch profile
-            const r = await fetchProfile(session.user.id, true)
+
+          /* -- OTP verify / OAuth callback -------------------- */
+          case 'SIGNED_IN': {
+            if (!session?.user) break
+            // If we just set profile directly (OTP flow), skip re-fetch
+            if (Date.now() - directSetAt.current < 30000) break
+            const c = cache.read()
+            if (c?.userId === session.user.id) {
+              setProfile(c.data); setLoading(false); break
+            }
+            const res = await fetchProfile(session.user.id, true)
             if (!mounted.current) return
-            if (r === null) {
-              // Profile not in DB yet (new OAuth user)
+            if (res === null) {
               if (session.user.app_metadata?.provider === 'google') {
                 setOauthUser(session.user)
               }
               setLoading(false)
             }
+            break
           }
-          break
-        }
 
-        case 'SIGNED_IN': {
-          if (!session?.user) break
-          // Skip if we just set profile directly (OTP verify flow)
-          if (Date.now() - directSetAt.current < 30000) { setLoading(false); break }
-          const c = cache.read()
-          if (c && c.userId === session.user.id) { setLoading(false); break }
-          const r = await fetchProfile(session.user.id, true)
-          if (!mounted.current) return
-          if (r === null) {
-            if (session.user.app_metadata?.provider === 'google') setOauthUser(session.user)
+          /* -- Background token refresh (every ~50 min) ------- */
+          case 'TOKEN_REFRESHED': {
+            // ★ Session is valid — just ensure loading is cleared
             setLoading(false)
+            if (session?.user) {
+              fetchProfile(session.user.id).catch(() => {})
+            }
+            break
           }
-          break
-        }
 
-        case 'TOKEN_REFRESHED': {
-          // Token silently refreshed — session is still valid
-          // Just ensure we're not stuck on loading
-          if (!mounted.current) return
-          setLoading(false)
-          // Background refresh profile if needed
-          if (session?.user) fetchProfile(session.user.id).catch(() => {})
-          break
-        }
-
-        case 'USER_UPDATED': {
-          if (session?.user) fetchProfile(session.user.id, true).catch(() => {})
-          break
-        }
-
-        case 'SIGNED_OUT': {
-          cache.clear()
-          directSetAt.current = 0
-          lastFetchAt.current = 0
-          if (mounted.current) {
-            setProfile(null)
-            setOauthUser(null)
-            setLoading(false)
+          /* -- Profile change --------------------------------- */
+          case 'USER_UPDATED': {
+            if (session?.user) fetchProfile(session.user.id, true).catch(() => {})
+            break
           }
-          break
-        }
 
-        default:
-          break
+          /* -- ★ ONLY clear profile on EXPLICIT sign out ------ */
+          case 'SIGNED_OUT': {
+            clearTimeout(safetyTimer)
+            cache.clear()
+            directSetAt.current  = 0
+            lastFetchAt.current  = 0
+            if (mounted.current) {
+              setProfile(null)
+              setOauthUser(null)
+              setLoading(false)
+            }
+            break
+          }
+
+          default: break
+        }
       }
-    })
+    )
 
     return () => {
-      clearTimeout(fallback)
+      clearTimeout(safetyTimer)
       subscription.unsubscribe()
     }
   }, [fetchProfile])
 
+  /* -- Called after OTP verify or profile save ------------------ */
   const setProfileDirect = useCallback((data) => {
     if (!data) { setLoading(false); return }
     directSetAt.current = Date.now()
@@ -228,13 +260,12 @@ export function AuthProvider({ children }) {
   }, [])
 
   const refreshProfile = useCallback(async () => {
-    lastFetchAt.current = 0  // force refresh
+    lastFetchAt.current = 0
     const { data: { user } } = await supabase.auth.getUser()
     if (user) await fetchProfile(user.id, true)
   }, [fetchProfile])
 
   const signOut = useCallback(async () => {
-    await doSignOut()
     cache.clear()
     directSetAt.current = 0
     lastFetchAt.current = 0
@@ -243,6 +274,8 @@ export function AuthProvider({ children }) {
       setOauthUser(null)
       setLoading(false)
     }
+    // Sign out from Supabase (fires SIGNED_OUT event)
+    await doSignOut()
   }, [])
 
   return (
