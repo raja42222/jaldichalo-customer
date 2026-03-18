@@ -1,13 +1,14 @@
-import { useState, useEffect, useRef, useCallback } from 'react'
+import React, { useState, useEffect, useRef, useCallback } from 'react'
 import { supabase }          from '../lib/supabase'
 import { useAuth }           from '../context/AuthContext'
 import { reverseGeocode, getDistanceKm, getEtaMins, isRouteDeviation } from '../lib/geo'
 import { computeETA, subscribeToNearbyDrivers, dispatchRide, RIDE_STATUS } from '../lib/etaService'
 import { calculateFare, getCommissionBreakdown, fmtRsSymbol as fmtRs } from '../lib/fareEngine'
-import { isDuplicateBooking, isValidRideTransition } from '../lib/security'
+import { isDuplicateBooking, recordBooking, isValidRideTransition } from '../lib/security'
 
 import { triggerRouteDeviationAlert, triggerLongStopAlert } from '../lib/safetyService'
 import LocationSearch from '../components/LocationSearch'
+import MapLocationPicker from '../components/MapLocationPicker'
 import MapView        from '../components/MapView'
 import ETAPanel       from '../components/ETAPanel'
 import { SafetyBar, SafetyAlertToast, useSafetyAlerts, ReportModal } from '../components/SafetyPanel'
@@ -27,6 +28,28 @@ const SendIcon  = () => <svg width="16" height="16" fill="none" stroke="currentC
 const LocIcon   = () => <svg width="18" height="18" fill="none" stroke="currentColor" strokeWidth="2.2" viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M12 2v3M12 19v3M2 12h3M19 12h3"/></svg>
 const BackIcon  = () => <svg width="22" height="22" fill="none" stroke="currentColor" strokeWidth="2.5" viewBox="0 0 24 24"><polyline points="15 18 9 12 15 6"/></svg>
 
+/* -- Offline banner ----------------------------------------- */
+function useOnlineStatus() {
+  const [online, setOnline] = React.useState(navigator.onLine)
+  React.useEffect(() => {
+    const on  = () => setOnline(true)
+    const off = () => setOnline(false)
+    window.addEventListener('online',  on)
+    window.addEventListener('offline', off)
+    return () => { window.removeEventListener('online',on); window.removeEventListener('offline',off) }
+  }, [])
+  return online
+}
+function OfflineBanner() {
+  const online = useOnlineStatus()
+  if (online) return null
+  return (
+    <div style={{ position:'fixed', top:0, left:0, right:0, zIndex:999, background:'#EF4444', color:'#fff', textAlign:'center', padding:'10px 16px', fontSize:13, fontWeight:700, display:'flex', alignItems:'center', justifyContent:'center', gap:8 }}>
+      <span>📵</span> No internet connection — limited functionality
+    </div>
+  )
+}
+
 const MAX_KM         = 100
 const LONG_STOP_MINS = 5
 const ETA_REFRESH_MS = 15000
@@ -38,14 +61,35 @@ function saveGPS(lat, lng) { try { localStorage.setItem(GPS_CACHE_KEY, JSON.stri
 function loadGPS() { try { const d = JSON.parse(localStorage.getItem(GPS_CACHE_KEY)); return d && Date.now()-d.ts < 3600000 ? d : null } catch { return null } }
 
 function getLocation(onGood, onFail) {
-  if (!navigator.geolocation) { onFail(); return }
-  const ok = pos => { const { latitude:lat, longitude:lng } = pos.coords; saveGPS(lat,lng); onGood(lat,lng) }
+  if (!navigator.geolocation) {
+    // Geolocation not supported — try cache
+    const c = loadGPS(); c ? onGood(c.lat, c.lng) : onFail(); return
+  }
+  const ok = pos => {
+    const { latitude:lat, longitude:lng, accuracy } = pos.coords
+    saveGPS(lat, lng)
+    onGood(lat, lng, accuracy)
+  }
+  // Attempt 1: High accuracy (GPS chip), 15s timeout, fresh fix
   navigator.geolocation.getCurrentPosition(ok,
-    () => navigator.geolocation.getCurrentPosition(ok,
-      () => { const c = loadGPS(); c ? onGood(c.lat, c.lng) : onFail() },
-      { enableHighAccuracy:false, timeout:8000, maximumAge:120000 }
-    ),
-    { enableHighAccuracy:true, timeout:15000, maximumAge:5000 }
+    () => {
+      // Attempt 2: High accuracy again but allow 10s cached fix
+      navigator.geolocation.getCurrentPosition(ok,
+        () => {
+          // Attempt 3: Accept any accuracy — last resort
+          navigator.geolocation.getCurrentPosition(ok,
+            () => {
+              // All failed — use cached GPS
+              const c = loadGPS()
+              if (c) { onGood(c.lat, c.lng, 9999); } else { onFail() }
+            },
+            { enableHighAccuracy:false, timeout:5000, maximumAge:300000 }
+          )
+        },
+        { enableHighAccuracy:true, timeout:12000, maximumAge:10000 }
+      )
+    },
+    { enableHighAccuracy:true, timeout:15000, maximumAge:0 }  // maximumAge:0 = always fresh
   )
 }
 
@@ -65,6 +109,7 @@ export default function PassengerHome({ onMenu }) {
   const [pickup,      setPickup]   = useState(null)
   const [drop,        setDrop]     = useState(null)
   const [locMode,     setLocMode]  = useState(null)
+  const [mapPickMode, setMapPickMode] = useState(null) // 'pickup'|'drop'|null
   const [distErr,     setDistErr]  = useState('')
   const [bookingFor,  setBookingFor] = useState({ type:'myself', phone:profile?.phone||'' })
 
@@ -81,6 +126,7 @@ export default function PassengerHome({ onMenu }) {
   const [dispatchMsg, setDispatchMsg] = useState('')
   const [showCancel,  setShowCancel] = useState(false)
   const [mapReady,    setMapReady]   = useState(false)
+  const [locating,    setLocating]   = useState(false)
   const [rating,      setRating]   = useState(0)
 
   const [nearbyDrvs,  setNearbyDrvs] = useState([])
@@ -91,6 +137,7 @@ export default function PassengerHome({ onMenu }) {
 
   const [safetyAlert, setSA]       = useState(null)
   const [showReport,  setShowReport] = useState(false)
+  const mapRef     = useRef(null)
   const lastDrvPos = useRef(null)
   const stopTimer  = useRef(null)
 
@@ -125,8 +172,15 @@ export default function PassengerHome({ onMenu }) {
   useEffect(() => { if (locMode)   pushScreen('locSearch') }, [locMode])
   useEffect(() => { if (showChat)  pushScreen('chat')      }, [showChat])
 
-  /* === GPS on mount with live watch === */
+  /* === GPS — passive location tracking ===
+   * 1. Prompt for geolocation permission immediately on mount
+   * 2. watchPosition continuously updates GPS (high accuracy)
+   * 3. Location cached for 2 hours — even if user doesn't book a ride,
+   *    pickup auto-fills instantly on next open
+   * 4. Handles visibilitychange — re-request GPS when app comes back to foreground
+   */
   useEffect(() => {
+    // Step 1: immediate permission request + first fix
     getLocation(
       async (lat, lng) => {
         setGps([lat, lng])
@@ -134,24 +188,81 @@ export default function PassengerHome({ onMenu }) {
         setGpsAddr(addr)
         setPickup(prev => prev ? prev : { id:'current', short:addr, label:addr, lat, lng })
       },
-      () => setGps([22.5726, 88.3639])
+      () => {
+        // Permission denied or unavailable — use Kolkata default
+        setGps([22.5726, 88.3639])
+      }
     )
-    // Watch for continuous GPS updates
+
     if (!navigator.geolocation) return
-    const wid = navigator.geolocation.watchPosition(
-      pos => { const { latitude:lat, longitude:lng } = pos.coords; saveGPS(lat,lng); setGps([lat,lng]) },
-      () => {},
-      { enableHighAccuracy:true, maximumAge:3000, timeout:20000 }
+
+    // Step 2: continuous watch for movement tracking
+    let watchId = navigator.geolocation.watchPosition(
+      pos => {
+        const { latitude:lat, longitude:lng, accuracy } = pos.coords
+        saveGPS(lat, lng)
+        setGps([lat, lng])
+        // Update pickup if user hasn't set one yet and we have good accuracy
+        if (accuracy < 100) {
+          setPickup(prev => {
+            if (!prev || prev.id === 'current') {
+              reverseGeocode(lat, lng).then(addr => {
+                setGpsAddr(addr)
+                setPickup({ id:'current', short:addr, label:addr, lat, lng })
+              })
+            }
+            return prev
+          })
+        }
+      },
+      err => {
+        // On error, fall back to last cached position
+        const c = loadGPS()
+        if (c) setGps([c.lat, c.lng])
+      },
+      { enableHighAccuracy:true, maximumAge:5000, timeout:30000 }
     )
-    return () => navigator.geolocation.clearWatch(wid)
+
+    // Step 3: re-request GPS when app comes back to foreground
+    function onVisibility() {
+      if (!document.hidden) {
+        getLocation(
+          (lat, lng) => { saveGPS(lat, lng); setGps([lat, lng]) },
+          () => {}
+        )
+      }
+    }
+    document.addEventListener('visibilitychange', onVisibility)
+
+    return () => {
+      if (watchId) navigator.geolocation.clearWatch(watchId)
+      document.removeEventListener('visibilitychange', onVisibility)
+    }
   }, []) // eslint-disable-line
 
   function recenterGPS() {
-    getLocation(async (lat, lng) => {
-      setGps([lat, lng])
-      const addr = await reverseGeocode(lat, lng)
-      setGpsAddr(addr)
-    }, () => {})
+    setLocating(true)
+    getLocation(
+      async (lat, lng, accuracy) => {
+        setGps([lat, lng])
+        setMapCenter([lat, lng])
+        setLocating(false)
+        const addr = await reverseGeocode(lat, lng)
+        setGpsAddr(addr)
+        // Update pickup if user hasn't manually set one
+        setPickup(prev => {
+          if (!prev || prev.id === 'current') {
+            return { id:'current', short:addr, label:addr, lat, lng }
+          }
+          return prev
+        })
+      },
+      () => {
+        setLocating(false)
+        // Show permission denied message
+        alert('Location access denied. Please enable GPS in your phone settings and try again.')
+      }
+    )
   }
 
   /* === ETA pipeline === */
@@ -164,8 +275,12 @@ export default function PassengerHome({ onMenu }) {
     await computeETA({ pickup:p, drop:d }, update => {
       if (ctrl.signal.aborted) return
       setEta(update)
-      if (update.rideInfo?.distance_km)
-        setDistErr(update.rideInfo.distance_km > MAX_KM ? `We serve rides up to ${MAX_KM} km. Expanding soon!` : '')
+      if (update.rideInfo?.distance_km) {
+        const km = update.rideInfo.distance_km
+        if (km > MAX_KM) setDistErr(`We serve rides up to ${MAX_KM} km. Expanding soon!`)
+        else if (km < 0.5) setDistErr('Pickup and drop are too close. Minimum ride distance is 500 meters.')
+        else setDistErr('')
+      }
       if (update.phase === 'instant' && update.fareOptions?.length)
         setSelV(v => v || update.fareOptions[0].vehicleId)
     }, ctrl.signal)
@@ -318,6 +433,12 @@ export default function PassengerHome({ onMenu }) {
 
   async function bookRide() {
     if (!pickup || !drop || !selVehicle || distErr) return
+    // Validate booking for others
+    if (bookingFor.type === 'other') {
+      if (!bookingFor.name?.trim()) { alert('Enter the name of the person you are booking for.'); return }
+      const ph = String(bookingFor.phone||'').replace(/\D/g,'')
+      if (ph.length !== 10 || !/^[6-9]/.test(ph)) { alert('Enter a valid 10-digit Indian mobile number for the person.'); return }
+    }
     const ri = eta?.rideInfo
     if (!ri?.distance_km) return
     // Anti-duplicate: prevent double-booking same route within 5 minutes
@@ -358,6 +479,8 @@ export default function PassengerHome({ onMenu }) {
     setLoading(false)
     if (!row) { alert('Booking failed'); return }
     setRide(row); setRS('searching'); setDispatchMsg('Searching for captain...')
+    // Record to prevent duplicate bookings
+    recordBooking(profile.id, pickup.lat, pickup.lng, drop.lat, drop.lng)
     clearInterval(etaTimer.current); etaAbort.current?.abort()
     // Dispatch to best scored driver (Rapido-style sequential dispatch)
     dispatchRide(row.id, pickup.lat, pickup.lng, fd.vehicleId, status => {
@@ -382,6 +505,16 @@ export default function PassengerHome({ onMenu }) {
           })
       } else if (status.status === 'no_drivers') {
         setDispatchMsg('No captains available nearby. Please try again in a few minutes.')
+        // Cancel the ride in DB so it doesn't stay as 'searching_driver'
+        if (row?.id || ride?.id) {
+          supabase.from('rides').update({
+            ride_status: 'no_driver_found',
+            cancelled_at: new Date().toISOString()
+          }).eq('id', row?.id || ride?.id).catch(() => {})
+        }
+        setTimeout(() => {
+          setRS('idle'); setRide(null); setDriver(null); setDispatchMsg('')
+        }, 4000)
       } else if (status.status === 'cancelled') {
         setRS('idle'); setRide(null); setDriver(null); setDispatchMsg('')
       }
@@ -405,24 +538,58 @@ export default function PassengerHome({ onMenu }) {
     setTimeout(() => chatEndRef.current?.scrollIntoView({ behavior:'smooth' }), 100)
   }
 
-  async function submitRating() {
+  async function submitRating(skip = false) {
+    if (skip) {
+      setRS('idle'); setRide(null); setDriver(null); setPickup(null); setDrop(null); setRating(0); setEta(null)
+      return
+    }
     if (ride && rating) await supabase.from('rides').update({ passenger_rating:rating }).eq('id', ride.id)
     setRS('idle'); setRide(null); setDriver(null); setPickup(null); setDrop(null); setRating(0); setEta(null); stopDemo()
   }
 
-  /* === Derived === */
-  const selectedFare    = eta?.fareOptions?.find(f => f.vehicleId===selVehicle)
-  const mapCenter       = gps || [22.5726, 88.3639]
-  const driverPos       = driver?.current_lat ? [driver.current_lat, driver.current_lng] : null
-  const effectiveDrvPos = driverPos || (demoActive ? demoDrvPos : null)
-  const isActive        = ['matched','tracking'].includes(rideState)
+  /* === Derived (memoized to prevent unnecessary re-renders) === */
+  const selectedFare    = React.useMemo(
+    () => eta?.fareOptions?.find(f => f.vehicleId===selVehicle),
+    [eta?.fareOptions, selVehicle]
+  )
+  const mapCenter       = React.useMemo(() => gps || [22.5726, 88.3639], [gps])
+  const driverPos       = React.useMemo(
+    () => driver?.current_lat ? [driver.current_lat, driver.current_lng] : null,
+    [driver?.current_lat, driver?.current_lng]
+  )
+  const effectiveDrvPos = React.useMemo(
+    () => driverPos || (demoActive ? demoDrvPos : null),
+    [driverPos, demoActive, demoDrvPos]
+  )
+  const isActive        = React.useMemo(
+    () => ['matched','tracking'].includes(rideState),
+    [rideState]
+  )
 
-  /* === Location search === */
-  if (locMode) return (
+  /* === Location search — text mode === */
+  if (locMode && !mapPickMode) return (
     <LocationSearch mode={locMode} currentLoc={gps} userPhone={profile?.phone}
       bookingFor={bookingFor} onBookingForChange={setBookingFor}
       onSelect={p => { if (locMode==='pickup') setPickup(p); else setDrop(p); setLocMode(null) }}
-      onClose={() => setLocMode(null)} />
+      onClose={() => setLocMode(null)}
+      onMapPick={() => { setMapPickMode(locMode); setLocMode(null) }}
+    />
+  )
+
+  /* === Location search — map pick mode === */
+  if (mapPickMode) return (
+    <MapLocationPicker
+      mode={mapPickMode}
+      initialLat={mapPickMode==='pickup' ? (pickup?.lat || gps?.[0]) : (drop?.lat || gps?.[0])}
+      initialLng={mapPickMode==='pickup' ? (pickup?.lng || gps?.[1]) : (drop?.lng || gps?.[1])}
+      currentGPS={gps}
+      onConfirm={place => {
+        if (mapPickMode==='pickup') setPickup(place)
+        else setDrop(place)
+        setMapPickMode(null)
+      }}
+      onClose={() => setMapPickMode(null)}
+    />
   )
 
   /* === In-app chat screen === */
@@ -471,6 +638,8 @@ export default function PassengerHome({ onMenu }) {
   return (
     <div style={{ position:'fixed', inset:0, overflow:'hidden' }}>
       {safetyAlert && <SafetyAlertToast alert={safetyAlert} onDismiss={() => setSA(null)} />}
+      {/* Offline banner */}
+      <OfflineBanner />
       {showReport && ride && <ReportModal rideId={ride.id} userId={profile.id} role="passenger" onClose={() => setShowReport(false)} />}
       {showCancel && ride && (
         <CancelRideModal
@@ -506,11 +675,22 @@ export default function PassengerHome({ onMenu }) {
         <div style={{ width:42 }} />
       </div>
 
-      {/* Locate-me button */}
-      {/* Locate-me — always visible, 16px above sheet top */}
-      <button onClick={recenterGPS}
-        style={{ position:'absolute', right:14, bottom:`calc(${SHEET_HEIGHT} + 16px)`, zIndex:30, width:46, height:46, borderRadius:'50%', background:'#fff', boxShadow:'0 3px 14px rgba(0,0,0,0.20)', display:'flex', alignItems:'center', justifyContent:'center', border:'none', cursor:'pointer', transition:'bottom 0.3s' }}>
-        <LocIcon />
+      {/* Locate-me — always visible, shows spinner while locating */}
+      <button onClick={recenterGPS} disabled={locating}
+        title="Find my location"
+        style={{
+          position:'absolute', right:14, bottom:`calc(${SHEET_HEIGHT} + 16px)`,
+          zIndex:30, width:46, height:46, borderRadius:'50%',
+          background: locating ? 'var(--brand)' : '#fff',
+          boxShadow:'0 3px 14px rgba(0,0,0,0.22)',
+          display:'flex', alignItems:'center', justifyContent:'center',
+          border:'none', cursor: locating ? 'wait' : 'pointer',
+          transition:'all 0.2s',
+        }}>
+        {locating
+          ? <div style={{ width:20, height:20, border:'3px solid rgba(255,255,255,0.4)', borderTopColor:'#fff', borderRadius:'50%', animation:'spin 0.7s linear infinite' }} />
+          : <LocIcon />
+        }
       </button>
 
       {/* Distance pill */}
@@ -721,8 +901,7 @@ export default function PassengerHome({ onMenu }) {
                 ))}
               </div>
               <div style={{ display:'flex', gap:8 }}>
-                <button className="btn btn-ghost btn-sm" style={{ flex:1, borderRadius:12 }} onClick={() => setShowChat(true)}><ChatIcon /> Chat</button>
-                <button onClick={() => setShowChat(true)} className="btn btn-ghost btn-sm" style={{ flex:1, borderRadius:12, color:'var(--brand)' }}><ChatIcon /> Chat</button>
+                <button onClick={() => setShowChat(true)} className="btn btn-ghost btn-sm" style={{ flex:1, borderRadius:12, color:'var(--brand)' }}><ChatIcon /> Chat with captain</button>
               </div>
             </div>
           )}
@@ -730,24 +909,44 @@ export default function PassengerHome({ onMenu }) {
           {/* RATING */}
           {rideState==='rating' && (
             <div className="anim-up" style={{ padding:'10px 16px 16px', textAlign:'center' }}>
-              <div style={{ fontSize:42, marginBottom:10 }}>🎉</div>
-              <div className="t-h1" style={{ marginBottom:4 }}>Ride complete!</div>
-              <div className="t-body t-muted" style={{ marginBottom:18 }}>How was your experience?</div>
-              <div style={{ display:'flex', justifyContent:'center', gap:10, marginBottom:18 }}>
+              <div style={{ fontSize:42, marginBottom:8 }}>🎉</div>
+              <div className="t-h1" style={{ marginBottom:2 }}>Ride complete!</div>
+              {driver && (
+                <div style={{ fontSize:13, color:'var(--text3)', marginBottom:14 }}>
+                  Rate your experience with <strong>{driver.name}</strong>
+                </div>
+              )}
+              {/* Star rating */}
+              <div style={{ display:'flex', justifyContent:'center', gap:8, marginBottom:6 }}>
                 {[1,2,3,4,5].map(s => (
-                  <button key={s} className="star-btn" onClick={() => setRating(s)} style={{ fontSize:34 }}>{s<=rating?'⭐':'☆'}</button>
+                  <button key={s} onClick={() => setRating(s)}
+                    style={{ fontSize:38, background:'none', border:'none', cursor:'pointer', transform:s<=rating?'scale(1.15)':'scale(1)', transition:'transform 0.15s', padding:2 }}>
+                    {s<=rating?'⭐':'☆'}
+                  </button>
                 ))}
               </div>
-              <div style={{ background:'var(--bg2)', borderRadius:12, padding:'12px 16px', marginBottom:14, textAlign:'left' }}>
-                {[{l:'Total fare',v:fmtRs(ride?.fare||0),c:'var(--brand)'},{l:'Distance',v:`${(ride?.distance_km||0).toFixed(1)} km`},{l:'Payment',v:payMethod==='cash'?'Cash':'UPI'}].map(r => (
-                  <div key={r.l} style={{ display:'flex', justifyContent:'space-between', marginBottom:4 }}>
-                    <span className="t-body t-muted">{r.l}</span>
-                    <span style={{ fontWeight:700, color:r.c||'var(--text)', fontSize:r.l==='Total fare'?17:14 }}>{r.v}</span>
+              <div style={{ fontSize:12, color:'var(--text3)', marginBottom:16, minHeight:16 }}>
+                {rating===5?'Excellent! 🙌':rating===4?'Great ride! 👍':rating===3?'It was okay':rating===2?'Needs improvement':rating===1?'Poor experience':'Tap to rate'}
+              </div>
+              {/* Fare summary */}
+              <div style={{ background:'var(--bg2)', borderRadius:14, padding:'12px 16px', marginBottom:14, textAlign:'left' }}>
+                {[
+                  {l:'Total fare', v:fmtRs(ride?.fare||0), c:'var(--brand)'},
+                  {l:'Distance',   v:`${(ride?.distance_km||0).toFixed(1)} km`},
+                  {l:'Payment',    v:payMethod==='cash'?'💵 Cash':'📱 UPI'},
+                ].map(r => (
+                  <div key={r.l} style={{ display:'flex', justifyContent:'space-between', alignItems:'center', padding:'5px 0', borderBottom:'1px solid var(--border)' }}>
+                    <span style={{ fontSize:13, color:'var(--text3)' }}>{r.l}</span>
+                    <span style={{ fontWeight:700, color:r.c||'var(--text)', fontSize:r.l==='Total fare'?16:13 }}>{r.v}</span>
                   </div>
                 ))}
               </div>
-              <button className="btn btn-primary" onClick={submitRating} disabled={!rating}>
-                {rating ? `Submit Rating (${rating} stars)` : 'Please rate your ride'}
+              <button className="btn btn-primary" onClick={submitRating} disabled={!rating} style={{ marginBottom:8 }}>
+                {rating ? `Submit ${rating}★ Rating →` : 'Tap stars to rate'}
+              </button>
+              <button onClick={() => submitRating(true)}
+                style={{ width:'100%', padding:'10px', background:'none', border:'none', fontSize:13, color:'var(--text3)', cursor:'pointer', fontFamily:'inherit' }}>
+                Skip rating
               </button>
             </div>
           )}

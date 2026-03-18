@@ -15,6 +15,7 @@ export default function GoogleSetup() {
   const [otpSent, setOtpSent] = useState(false)
   const [timer,   setTimer]   = useState(0)
   const [loading, setLoading] = useState(false)
+  const [phoneAlreadyTaken, setPhoneAlreadyTaken] = useState(false)
   const [error,   setError]   = useState('')
   const [step,    setStep]    = useState('details')
   const otpRefs = useRef([])
@@ -48,11 +49,39 @@ export default function GoogleSetup() {
   async function finishSave() {
     setLoading(true)
     try {
-      const { error:rpcErr } = await supabase.rpc('upsert_passenger', {
+      // -- Layer 1: Check if phone already registered as PASSENGER --
+      const { data: paxCheck } = await supabase
+        .from('passengers')
+        .select('id')
+        .eq('phone', `+91${phone}`)
+        .neq('id', oauthUser.id)
+        .maybeSingle()
+      if (paxCheck) {
+        setError('⚠️ This number is already registered. Please sign in with this number instead of Google.')
+        setPhoneAlreadyTaken(true)
+        setLoading(false); return
+      }
+
+      // -- Layer 2: Check if phone already registered as DRIVER --
+      const { data: drvCheck } = await supabase
+        .from('drivers')
+        .select('id')
+        .eq('phone', `+91${phone}`)
+        .maybeSingle()
+      if (drvCheck) {
+        setError('⚠️ This number is registered as a driver. Use the Captain app to manage that account. Please use a different number here.')
+        setLoading(false); return
+      }
+
+      const { data:rpcData, error:rpcErr } = await supabase.rpc('upsert_passenger', {
         p_id:oauthUser.id, p_name:name.trim(),
         p_phone:phone?`+91${phone}`:null, p_email:email||null, p_method:'google'
       })
-      if (rpcErr) {
+      if (rpcErr || rpcData?.success === false) {
+        if (rpcData?.error === 'phone_taken') {
+          setError(rpcData.message || 'Phone already registered.')
+          setLoading(false); return
+        }
         const { error:insErr } = await supabase.from('passengers').upsert({
           id:oauthUser.id, name:name.trim(),
           phone:phone?`+91${phone}`:null, email:email||null,
@@ -133,7 +162,23 @@ export default function GoogleSetup() {
           </div>
         )}
 
-        {error&&<div style={{ fontSize:13, color:error.includes('sent')?'#16A34A':'#DC2626', marginBottom:14, padding:'10px 14px', background:error.includes('sent')?'#ECFDF5':'#FEF2F2', borderRadius:10 }}>{error}</div>}
+        {error && (
+          <div style={{ marginBottom:14, padding:'12px 14px', background:error.includes('sent')?'#ECFDF5':'#FEF2F2', borderRadius:12, border:`1px solid ${error.includes('sent')?'#BBF7D0':'#FECACA'}` }}>
+            <div style={{ fontSize:13, fontWeight:600, color:error.includes('sent')?'#16A34A':'#DC2626', marginBottom: phoneAlreadyTaken ? 10 : 0 }}>{error}</div>
+            {phoneAlreadyTaken && (
+              <div style={{ display:'flex', gap:8, marginTop:8 }}>
+                <button onClick={() => { setPhoneAlreadyTaken(false); setError(''); setPhone('') }}
+                  style={{ flex:1, padding:'8px', borderRadius:10, border:'1.5px solid #DC2626', background:'transparent', color:'#DC2626', fontWeight:700, fontSize:12, cursor:'pointer', fontFamily:'inherit' }}>
+                  Use different number
+                </button>
+                <button onClick={signOut}
+                  style={{ flex:1, padding:'8px', borderRadius:10, border:'none', background:'#FF5F1F', color:'#fff', fontWeight:700, fontSize:12, cursor:'pointer', fontFamily:'inherit' }}>
+                  Sign in with phone
+                </button>
+              </div>
+            )}
+          </div>
+        )}
 
         {/* Save button */}
         {phone.length===10&&otpSent ? (

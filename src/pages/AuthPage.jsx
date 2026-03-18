@@ -137,12 +137,27 @@ export default function AuthPage() {
     try {
       const { data:{ user }, error:uErr } = await supabase.auth.getUser()
       if (uErr||!user) { setError('Session expired. Login again.'); setBusy(false); return }
+      // Check: phone not already registered to another account
+      const { data: phoneCheck } = await supabase
+        .from('passengers')
+        .select('id')
+        .eq('phone', `+91${phone}`)
+        .neq('id', user.id)
+        .maybeSingle()
+      if (phoneCheck) {
+        setError('This phone number is already registered. Please sign in.')
+        setBusy(false); return
+      }
       const { data:drCheck } = await supabase.from('drivers').select('id').eq('id',user.id).maybeSingle()
       if (drCheck) { setError('This number is a Driver account. Use Driver app.'); setBusy(false); return }
       const method = channel==='whatsapp'?'whatsapp':'phone'
       const deviceId = getDeviceFingerprint()
-      const { error:rpcErr } = await supabase.rpc('upsert_passenger', { p_id:user.id, p_name:name.trim(), p_phone:`+91${phone}`, p_email:email.trim()||null, p_method:method })
-      if (rpcErr) {
+      const { data:rpcData, error:rpcErr } = await supabase.rpc('upsert_passenger', { p_id:user.id, p_name:name.trim(), p_phone:`+91${phone}`, p_email:email.trim()||null, p_method:method })
+      if (rpcErr || rpcData?.success === false) {
+        if (rpcData?.error === 'phone_taken') {
+          setError(rpcData.message || 'Phone already registered.')
+          setBusy(false); return
+        }
         const { error:insErr } = await supabase.from('passengers').upsert({ id:user.id, name:name.trim(), phone:`+91${phone}`, email:email.trim()||null, phone_confirmed:true, login_method:method }, { onConflict:'id' })
         if (insErr) { setError(insErr.message); setBusy(false); return }
       }
