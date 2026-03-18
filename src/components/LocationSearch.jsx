@@ -7,6 +7,7 @@ const PinIcon   = () => <svg width="16" height="16" fill="none" stroke="currentC
 const ClockIcon = () => <svg width="16" height="16" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
 const LocIcon   = () => <svg width="18" height="18" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M12 2v3M12 19v3M2 12h3M19 12h3"/></svg>
 const SpinIcon  = () => <div style={{width:16,height:16,border:'2.5px solid #E0E0E0',borderTopColor:'#FF5F1F',borderRadius:'50%',animation:'spin 0.7s linear infinite',display:'inline-block'}}/>
+const MapIcon   = () => <svg width="15" height="15" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24"><polygon points="1 6 1 22 8 18 16 22 23 18 23 2 16 6 8 2 1 6"/><line x1="8" y1="2" x2="8" y2="18"/><line x1="16" y1="6" x2="16" y2="22"/></svg>
 
 /* -- Recent storage -- */
 const KEY = 'jc_recent_v4'
@@ -96,7 +97,7 @@ function BookForModal({ current, userPhone, onClose, onChange }) {
 /* ============================================================
    LOCATION SEARCH
 ============================================================ */
-export default function LocationSearch({ mode, currentLoc, onSelect, onClose, bookingFor, userPhone, onBookingForChange }) {
+export default function LocationSearch({ mode, currentLoc, onSelect, onClose, bookingFor, userPhone, onBookingForChange, onMapPick }) {
   const [query,    setQuery]   = useState('')
   const [results,  setResults] = useState([])
   const [loading,  setLoading] = useState(false)
@@ -193,6 +194,23 @@ export default function LocationSearch({ mode, currentLoc, onSelect, onClose, bo
 
         {/* Body */}
         <div style={{ flex:1, overflowY:'auto' }}>
+          {/* Pick on map button */}
+          {onMapPick && (
+            <div onClick={onMapPick}
+              style={{ display:'flex', alignItems:'center', gap:14, padding:'14px 18px', borderBottom:'1px solid var(--border)', cursor:'pointer', background:'#fff' }}>
+              <div style={{ width:40, height:40, borderRadius:12, background:'#FFF0E8', display:'flex', alignItems:'center', justifyContent:'center', flexShrink:0 }}>
+                <MapIcon />
+              </div>
+              <div>
+                <div style={{ fontWeight:700, fontSize:14, color:'#FF5F1F' }}>Pick on Map</div>
+                <div style={{ fontSize:12, color:'#888', marginTop:1 }}>Drag map to select exact spot</div>
+              </div>
+              <div style={{ marginLeft:'auto', color:'#ccc' }}>
+                <svg width="16" height="16" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24"><polyline points="9 18 15 12 9 6"/></svg>
+              </div>
+            </div>
+          )}
+
           {/* Use GPS */}
           <div onClick={useGPSLocation} style={{ display:'flex', alignItems:'center', gap:14, padding:'14px 18px', borderBottom:'1px solid var(--border)', cursor:'pointer', background: gpsLoading ? 'var(--bg2)' : '#fff' }}>
             <div style={{ width:40, height:40, borderRadius:12, background:'#EBF5FB', display:'flex', alignItems:'center', justifyContent:'center', flexShrink:0 }}>

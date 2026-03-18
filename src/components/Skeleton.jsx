@@ -1,3 +1,5 @@
+export { AppSkeleton } from './SplashScreen'
+
 /* ================================================================
    JALDI CHALO — Reusable Skeleton Loader System
    ----------------------------------------------------------------
@@ -369,7 +371,7 @@ export function SkeletonEarnings() {
    7. APP SKELETON — full-screen shell before auth resolves
    Looks like the real UI but with shimmer placeholders
 ================================================================ */
-export function AppSkeleton({ isDriver = false }) {
+function _AppSkeletonOriginal({ isDriver = false }) {
   const brand = isDriver ? '#16A34A' : '#FF5F1F'
   const brand2 = isDriver ? '#22C55E' : '#FF8C00'
 

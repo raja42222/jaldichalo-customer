@@ -338,28 +338,40 @@ function dropHtml() {
 }
 
 function driverHtml() {
-  /* SVG car pointing UP (North=0°) — rotation works perfectly without offset */
+  /* Rapido-style driver marker: orange circle with white bike icon pointing UP (North)
+   * Rotation is applied on .drv-icon — bearing 0 = North, 90 = East, etc.
+   * No offset needed. */
   return `
     <style>
-      .drv-wrap{position:relative;width:48px;height:48px;filter:drop-shadow(0 4px 12px rgba(255,95,31,0.5))}
-      .drv-icon{width:48px;height:48px;will-change:transform;transform-origin:center center;display:block}
-      @keyframes drPulse2{0%{opacity:0.7;transform:scale(1)}70%{opacity:0;transform:scale(2.2)}100%{opacity:0}}
-      .drv-pulse{position:absolute;inset:2px;border-radius:50%;border:2.5px solid rgba(255,95,31,0.7);animation:drPulse2 2s ease-out infinite;pointer-events:none}
+      .drv-wrap{position:relative;width:52px;height:52px}
+      .drv-icon{width:52px;height:52px;will-change:transform;transform-origin:26px 26px;display:block;transition:none}
+      @keyframes drvPing{0%{transform:scale(0.6);opacity:0.8}100%{transform:scale(2.4);opacity:0}}
+      .drv-ring{position:absolute;inset:0;border-radius:50%;border:2px solid rgba(255,95,31,0.6);animation:drvPing 2s ease-out infinite;pointer-events:none}
+      .drv-ring2{position:absolute;inset:0;border-radius:50%;border:2px solid rgba(255,95,31,0.4);animation:drvPing 2s ease-out 0.7s infinite;pointer-events:none}
     </style>
     <div class="drv-wrap">
-      <div class="drv-pulse"></div>
-      <svg class="drv-icon" viewBox="0 0 48 48" fill="none" xmlns="http://www.w3.org/2000/svg">
-        <!-- Circle background -->
-        <circle cx="24" cy="24" r="22" fill="url(#drvGrad)" stroke="white" stroke-width="2.5"/>
-        <!-- Car/bike shape pointing UP -->
-        <!-- Arrow pointing up like Rapido -->
-        <path d="M24 10 L31 28 L24 24 L17 28 Z" fill="white" opacity="0.95"/>
+      <div class="drv-ring"></div>
+      <div class="drv-ring2"></div>
+      <svg class="drv-icon" viewBox="0 0 52 52" fill="none" xmlns="http://www.w3.org/2000/svg">
         <defs>
-          <linearGradient id="drvGrad" x1="0" y1="0" x2="48" y2="48" gradientUnits="userSpaceOnUse">
-            <stop offset="0%" stop-color="#FF5F1F"/>
-            <stop offset="100%" stop-color="#FF9500"/>
+          <linearGradient id="og" x1="0" y1="0" x2="52" y2="52" gradientUnits="userSpaceOnUse">
+            <stop stop-color="#FF5F1F"/>
+            <stop offset="1" stop-color="#FF9500"/>
           </linearGradient>
         </defs>
+        <!-- Shadow -->
+        <circle cx="26" cy="27" r="22" fill="rgba(0,0,0,0.15)"/>
+        <!-- Main circle -->
+        <circle cx="26" cy="26" r="22" fill="url(#og)" stroke="white" stroke-width="2.5"/>
+        <!-- Bike/scooter top-down view pointing UP — simplified clean shape -->
+        <!-- Body -->
+        <ellipse cx="26" cy="27" rx="4" ry="9" fill="white" opacity="0.95"/>
+        <!-- Front wheel (top = North direction) -->
+        <ellipse cx="26" cy="14" rx="3" ry="5" fill="white" opacity="0.9"/>
+        <!-- Rear wheel (bottom) -->
+        <ellipse cx="26" cy="38" rx="3" ry="5" fill="white" opacity="0.9"/>
+        <!-- Handlebars -->
+        <line x1="20" y1="17" x2="32" y2="17" stroke="white" stroke-width="2.5" stroke-linecap="round" opacity="0.9"/>
       </svg>
     </div>`
 }

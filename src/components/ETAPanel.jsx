@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react'
+import React, { useEffect, useRef, useState } from 'react'
 import { fmtRsSymbol as fmtRs, getSaving, driverBreakdown } from '../lib/fareEngine'
 import { Sk, SkeletonFareRows } from './Skeleton'
 
@@ -42,7 +42,7 @@ function LiveNum({ value, suffix = '', loading, color }) {
 /* ============================================================
    MAIN COMPONENT
    ============================================================ */
-export default function ETAPanel({ eta, selectedId, onSelectVehicle, nearbyByType: nearbyByTypeProp, style }) {
+const _ETAPanel = function ETAPanel({ eta, selectedId, onSelectVehicle, nearbyByType: nearbyByTypeProp, style }) {
   const nearbyByType = nearbyByTypeProp || eta?.nearbyByType || {}
   if (!eta) return null
 
@@ -161,6 +161,9 @@ export default function ETAPanel({ eta, selectedId, onSelectVehicle, nearbyByTyp
     </>
   )
 }
+
+const ETAPanel = React.memo(_ETAPanel)
+export default ETAPanel
 
 /* -- Fare selector rows -- */
 function FareSelector({ fareOptions, selectedId, onSelect, driverInfo, nearbyByType, loading }) {
