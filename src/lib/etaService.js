@@ -404,7 +404,7 @@ export function subscribeToNearbyDrivers(pickupLat, pickupLng, onUpdate) {
   const channel = supabase.channel(`nearby-${Math.round(pickupLat * 1000)}`)
     .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'drivers' },
       ({ new: d }) => {
-        if (!d.is_online || d.status !== 'approved' || !d.current_lat) {
+        if (!d.is_online || d.status?.toLowerCase() !== 'approved' || !d.current_lat) {
           nearby.delete(d.id)
         } else {
           const dist = haversineKm(pickupLat, pickupLng, d.current_lat, d.current_lng)

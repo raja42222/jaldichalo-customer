@@ -1,140 +1,152 @@
-/* ===============================================================
-   JALDI CHALO - Security & Anti-Fraud Module
-   ---------------------------------------------------------------
-   Rapido-style security:
+/* ================================================================
+   SECURITY MODULE — Jaldi Chalo v3.0
+   
+   1. Rate limiting — OTP/booking attempts
+   2. Anti-duplicate booking 
+   3. Device fingerprint
+   4. Input sanitization
+   5. Session integrity checks
+   6. Ride state machine validation
+================================================================ */
 
-   1. LOGIN SECURITY
-      - Real OTP via Supabase (WhatsApp/SMS/Google)
-      - Demo mode only when VITE_DEMO_MODE=true (dev only)
-      - Client-side rate limit: 3 attempts per 5 minutes
-      - Device fingerprint stored to detect account sharing
-
-   2. RIDE OTP SECURITY (Rapido exact flow)
-      - 4-digit OTP generated SERVER-SIDE (never client)
-      - Hashed with SHA-256 before storage (plain text never stored)
-      - Max 5 wrong attempts → ride cancelled automatically
-      - OTP expires 30 minutes after ride acceptance
-      - Customer SHOWS OTP → Driver TYPES it (not the other way)
-
-   3. RIDE STATE MACHINE
-      Allowed transitions only:
-      searching → accepted → arrived → started → completed
-      Any other transition is rejected server-side
-
-   4. ANTI-FRAUD CHECKS
-      - Driver must be within 500m of pickup to start ride
-      - GPS timestamp must be within last 15 seconds
-      - Duplicate booking prevention (same passenger, same route, 5min window)
-      - Driver cannot complete ride without OTP verification
-
-   5. SESSION SECURITY
-      - Supabase JWT (1 hour) + refresh token (7 days)
-      - Explicit logout clears all local data
-      - One active session per phone number
-   =============================================================== */
-
-/* --- Rate limiter (client-side, prevents brute force) --------- */
-const rateLimitMap = new Map()
+/* -- Rate Limiting ------------------------------------------ */
+const _limits = new Map()
 
 export function checkRateLimit(key, maxAttempts = 3, windowMs = 5 * 60 * 1000) {
-  const now     = Date.now()
-  const entry   = rateLimitMap.get(key) || { count: 0, firstAt: now }
-
-  if (now - entry.firstAt > windowMs) {
-    rateLimitMap.set(key, { count: 1, firstAt: now })
-    return { allowed: true, remaining: maxAttempts - 1 }
+  const now = Date.now()
+  const entry = _limits.get(key) || { count: 0, windowStart: now }
+  if (now - entry.windowStart > windowMs) {
+    _limits.set(key, { count: 1, windowStart: now }); return true
   }
-
-  if (entry.count >= maxAttempts) {
-    const retryAfter = Math.ceil((entry.firstAt + windowMs - now) / 1000)
-    return { allowed: false, retryAfterSec: retryAfter }
-  }
-
-  entry.count++
-  rateLimitMap.set(key, entry)
-  return { allowed: true, remaining: maxAttempts - entry.count }
+  if (entry.count >= maxAttempts) return false
+  _limits.set(key, { ...entry, count: entry.count + 1 }); return true
 }
 
-export function resetRateLimit(key) {
-  rateLimitMap.delete(key)
+export function resetRateLimit(key) { _limits.delete(key) }
+
+export function getRemainingAttempts(key, maxAttempts = 3, windowMs = 5 * 60 * 1000) {
+  const entry = _limits.get(key)
+  if (!entry || Date.now() - entry.windowStart > windowMs) return maxAttempts
+  return Math.max(0, maxAttempts - entry.count)
 }
 
-/* --- Device fingerprint (lightweight, privacy-preserving) ----- */
+/* -- Anti-duplicate Booking --------------------------------- */
+const _recentBookings = new Map()
+
+export function isDuplicateBooking(userId, pickLat, pickLng, dropLat, dropLng, windowMs = 5 * 60 * 1000) {
+  const key   = userId
+  const entry = _recentBookings.get(key)
+  const now   = Date.now()
+  if (!entry || now - entry.ts > windowMs) return false
+  const samePick = Math.abs(entry.pickLat - pickLat) < 0.001 && Math.abs(entry.pickLng - pickLng) < 0.001
+  const sameDrop = Math.abs(entry.dropLat - dropLat) < 0.001 && Math.abs(entry.dropLng - dropLng) < 0.001
+  return samePick && sameDrop
+}
+
+export function recordBooking(userId, pickLat, pickLng, dropLat, dropLng) {
+  _recentBookings.set(userId, { pickLat, pickLng, dropLat, dropLng, ts: Date.now() })
+}
+
+/* -- Device Fingerprint ------------------------------------- */
 export function getDeviceFingerprint() {
   try {
-    const key = 'jc_device_id'
-    let id = localStorage.getItem(key)
-    if (!id) {
-      id = Array.from(crypto.getRandomValues(new Uint8Array(16)))
-        .map(b => b.toString(16).padStart(2, '0')).join('')
-      localStorage.setItem(key, id)
+    const nav = window.navigator
+    const raw = [
+      nav.userAgent,
+      nav.language,
+      screen.width + 'x' + screen.height + 'x' + screen.colorDepth,
+      Intl.DateTimeFormat().resolvedOptions().timeZone,
+      nav.hardwareConcurrency || '',
+      nav.platform || '',
+    ].join('|')
+    // Simple hash
+    let hash = 0
+    for (let i = 0; i < raw.length; i++) {
+      hash = ((hash << 5) - hash) + raw.charCodeAt(i)
+      hash |= 0
     }
-    return id
+    return Math.abs(hash).toString(36)
   } catch { return 'unknown' }
 }
 
-/* --- Demo mode check ------------------------------------------ */
-export const IS_DEMO = import.meta.env.VITE_DEMO_MODE === 'true'
-
-/* --- OTP validation helpers ----------------------------------- */
-export function isValidOTPFormat(otp) {
-  return /^\d{6}$/.test(otp)
+/* -- Input Sanitization ------------------------------------- */
+export function sanitizeText(str, maxLen = 100) {
+  if (typeof str !== 'string') return ''
+  return str
+    .trim()
+    .replace(/[<>'"&]/g, '')   // strip basic XSS chars
+    .replace(/\s+/g, ' ')       // collapse whitespace
+    .slice(0, maxLen)
 }
 
-export function isValidRideOTPFormat(otp) {
-  return /^\d{4}$/.test(otp)
+export function sanitizePhone(str) {
+  return (str || '').replace(/\D/g, '').slice(-10)
 }
 
-/* --- GPS validation (anti-spoofing) --------------------------- */
-export function isGPSFresh(timestampIso, maxAgeMs = 15000) {
-  if (!timestampIso) return false
-  return Date.now() - new Date(timestampIso).getTime() < maxAgeMs
+export function isValidIndianPhone(phone) {
+  const cleaned = sanitizePhone(phone)
+  return cleaned.length === 10 && /^[6-9]/.test(cleaned)
 }
 
-export function isDriverNearPickup(driverLat, driverLng, pickupLat, pickupLng, maxMeters = 500) {
-  const R   = 6371000
+export function isValidLicenseNo(str) {
+  const c = (str || '').replace(/[\s\-\/]/g, '').toUpperCase()
+  return c.length >= 9 && /^[A-Z]{2}/.test(c)
+}
+
+export function isValidVehicleNo(str) {
+  const c = (str || '').replace(/[\s\-]/g, '').toUpperCase()
+  return c.length >= 6 && /^[A-Z]{2}/.test(c)
+}
+
+/* -- Ride State Machine ------------------------------------- */
+// Valid transitions: from → [allowed next states]
+const RIDE_TRANSITIONS = {
+  'searching_driver':  ['driver_assigned', 'cancelled', 'no_driver_found'],
+  'searching':         ['driver_assigned', 'cancelled', 'no_driver_found'],
+  'driver_assigned':   ['driver_arrived',  'cancelled'],
+  'driver_arrived':    ['otp_verified',    'cancelled'],
+  'otp_verified':      ['ride_started',    'cancelled'],
+  'ride_started':      ['ride_completed',  'cancelled'],
+  'ride_completed':    [],
+  'cancelled':         [],
+  'no_driver_found':   [],
+}
+
+export function isValidRideTransition(from, to) {
+  const allowed = RIDE_TRANSITIONS[from] || []
+  // Map shorthand to full status names
+  const toFull = {
+    'assigned':  'driver_assigned',
+    'arrived':   'driver_arrived',
+    'verified':  'otp_verified',
+    'started':   'ride_started',
+    'completed': 'ride_completed',
+  }[to] || to
+  return allowed.includes(toFull)
+}
+
+/* -- GPS Proximity Check ------------------------------------ */
+// Verify driver is actually near pickup before OTP
+export function isDriverNearPickup(driverLat, driverLng, pickupLat, pickupLng, thresholdKm = 0.5) {
+  const R = 6371
   const dLat = (pickupLat - driverLat) * Math.PI / 180
   const dLng = (pickupLng - driverLng) * Math.PI / 180
-  const a   = Math.sin(dLat/2)**2 + Math.cos(driverLat*Math.PI/180) * Math.cos(pickupLat*Math.PI/180) * Math.sin(dLng/2)**2
-  const distM = R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a))
-  return { isNear: distM <= maxMeters, distanceM: Math.round(distM) }
+  const a = Math.sin(dLat/2)**2 +
+    Math.cos(driverLat * Math.PI/180) * Math.cos(pickupLat * Math.PI/180) * Math.sin(dLng/2)**2
+  const dist = R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a))
+  return dist <= thresholdKm
 }
 
-/* --- Ride state machine --------------------------------------- */
-const VALID_TRANSITIONS = {
-  searching:    ['accepted', 'cancelled'],
-  accepted:     ['arrived',  'cancelled'],
-  arrived:      ['otp_verified', 'cancelled'],
-  otp_verified: ['started',  'cancelled'],
-  started:      ['completed', 'cancelled'],
-  completed:    [],
-  cancelled:    [],
+/* -- Session Integrity -------------------------------------- */
+export function validateSession(profile, requiredRole) {
+  if (!profile) return { valid: false, reason: 'No profile' }
+  if (!profile.id) return { valid: false, reason: 'No user ID' }
+  if (requiredRole === 'driver') {
+    if (profile.status?.toLowerCase() !== 'approved')
+      return { valid: false, reason: 'Driver not approved' }
+  }
+  return { valid: true }
 }
 
-export function isValidRideTransition(fromStatus, toStatus) {
-  return VALID_TRANSITIONS[fromStatus]?.includes(toStatus) ?? false
-}
-
-/* --- Anti-duplicate booking ----------------------------------- */
-const recentBookings = new Map()
-
-export function isDuplicateBooking(passengerId, pickupLat, pickupLng, dropLat, dropLng, windowMs = 5 * 60 * 1000) {
-  const key = `${passengerId}_${pickupLat.toFixed(3)}_${pickupLng.toFixed(3)}_${dropLat.toFixed(3)}_${dropLng.toFixed(3)}`
-  const last = recentBookings.get(key)
-  if (last && Date.now() - last < windowMs) return true
-  recentBookings.set(key, Date.now())
-  return false
-}
-
-/* --- Input sanitization --------------------------------------- */
-export function sanitizePhone(input) {
-  return input.replace(/\D/g, '').slice(0, 10)
-}
-
-export function sanitizeName(input) {
-  return input.replace(/[^a-zA-Z\u0900-\u097F\s.'-]/g, '').slice(0, 60).trim()
-}
-
-export function sanitizeAddress(input) {
-  return input.replace(/[<>]/g, '').slice(0, 200).trim()
-}
+/* -- Demo Mode ---------------------------------------------- */
+export const IS_DEMO = import.meta.env.VITE_DEMO_MODE === 'true'

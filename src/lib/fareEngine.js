@@ -77,13 +77,20 @@ export function calculateFare(vehicleId, distanceKm, durationMins, overrides = {
   const dist = Math.max(0, distanceKm   || 0)
   const dur  = Math.max(0, durationMins || 0)
 
+  // Night surcharge: 10% extra between 11pm and 5am (IST)
+  const hour = new Date().toLocaleTimeString('en-IN', { hour:'numeric', hour12:false, timeZone:'Asia/Kolkata' })
+  const h    = parseInt(hour, 10)
+  const nightSurcharge = (h >= 23 || h < 5) ? 0.10 : 0  // 10% night charge
+
   const distanceFare       = +(dist * cfg.perKmRate).toFixed(2)
   const timeChargeApplied  = dist > PRICING.rules.timePricingThreshKm
   const timeChargeInternal = timeChargeApplied ? +(dur * cfg.timeRatePerMin).toFixed(2) : 0
 
   const surgeMultiplier = overrides.surgeMultiplier ?? PRICING.surge.multiplier
   const surgeLabel      = surgeMultiplier > 1 ? `${surgeMultiplier}x Surge` : null
-  const afterSurge      = (distanceFare + timeChargeInternal) * surgeMultiplier
+  const nightAdd        = +(distanceFare * nightSurcharge).toFixed(2)
+  const nightLabel      = nightSurcharge > 0 ? 'Night charge (+10%)' : null
+  const afterSurge      = ((distanceFare + nightAdd) + timeChargeInternal) * surgeMultiplier
 
   const promoDiscount = Math.max(0, overrides.promoDiscount ?? 0)
   const afterPromo    = Math.max(0, afterSurge - promoDiscount)
@@ -111,6 +118,8 @@ export function calculateFare(vehicleId, distanceKm, durationMins, overrides = {
     promoDiscount,
     surgeMultiplier,
     surgeLabel,
+    nightAdd,
+    nightLabel,
     totalFare,
     mrp,
     platformCommission,
