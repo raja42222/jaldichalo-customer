@@ -15,7 +15,36 @@
   <meta name="mobile-web-app-capable" content="yes">
   <meta name="apple-mobile-web-app-capable" content="yes">
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
-  <script>window.addEventListener('beforeinstallprompt',function(e){e.preventDefault();window.__pwaPromptEvent=e;});</script>
+    <script>
+    // Capture PWA install prompt as early as possible (before React loads)
+    window.__pwaPrompt = null;
+    window.addEventListener('beforeinstallprompt', function(e) {
+      e.preventDefault();
+      window.__pwaPrompt = e;
+    });
+
+    // Request geolocation permission immediately on page load
+    // This ensures browser shows the permission dialog ASAP
+    if ('geolocation' in navigator) {
+      // Use a short timeout so the page has a moment to render first
+      setTimeout(function() {
+        navigator.geolocation.getCurrentPosition(
+          function(pos) {
+            // Cache immediately for fast startup
+            try {
+              localStorage.setItem('jc_last_pos', JSON.stringify({
+                lat: pos.coords.latitude,
+                lng: pos.coords.longitude,
+                ts: Date.now()
+              }));
+            } catch(e) {}
+          },
+          function() {}, // silent fail - React app handles fallback
+          { enableHighAccuracy: true, timeout: 15000, maximumAge: 0 }
+        );
+      }, 300);
+    }
+  </script>
 </head>
   <body>
     <div id="root"></div>
