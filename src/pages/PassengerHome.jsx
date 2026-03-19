@@ -60,6 +60,19 @@ const BOTTOM_PAD     = 140
 function saveGPS(lat, lng) { try { localStorage.setItem(GPS_CACHE_KEY, JSON.stringify({ lat, lng, ts: Date.now() })) } catch {} }
 function loadGPS() { try { const d = JSON.parse(localStorage.getItem(GPS_CACHE_KEY)); return d && Date.now()-d.ts < 3600000 ? d : null } catch { return null } }
 
+// Haptic feedback — feels tactile on supported devices
+function haptic(type = 'light') {
+  try {
+    if (navigator.vibrate) {
+      if (type === 'light')  navigator.vibrate(8)
+      if (type === 'medium') navigator.vibrate(18)
+      if (type === 'heavy')  navigator.vibrate([15,10,15])
+      if (type === 'success')navigator.vibrate([10,5,10,5,30])
+      if (type === 'error')  navigator.vibrate([40,20,40])
+    }
+  } catch {}
+}
+
 function getLocation(onGood, onFail) {
   if (!navigator.geolocation) {
     // Geolocation not supported — try cache
@@ -315,8 +328,8 @@ export default function PassengerHome({ onMenu }) {
     const ch = supabase.channel(`ride-${ride.id}`)
       .on('postgres_changes', { event:'UPDATE', schema:'public', table:'rides', filter:`id=eq.${ride.id}` }, ({ new:r }) => {
         setRide(r)
-        if (r.ride_status === RIDE_STATUS.ASSIGNED)     { setRS('matched'); fetchDriver(r.driver_id) }
-        if (r.ride_status === 'accepted')               { setRS('matched'); fetchDriver(r.driver_id) }
+        if (r.ride_status === RIDE_STATUS.ASSIGNED)     { setRS('matched'); fetchDriver(r.driver_id); haptic('success') }
+        if (r.ride_status === 'accepted')               { setRS('matched'); fetchDriver(r.driver_id); haptic('success') }
         if (r.ride_status === RIDE_STATUS.OTP_VERIFIED || r.ride_status === 'otp_verified') setRS('tracking')
         if (r.ride_status === RIDE_STATUS.STARTED || r.ride_status === 'started') setRS('tracking')
         if (r.ride_status === RIDE_STATUS.COMPLETED || r.ride_status === 'completed') setRS('rating')
@@ -433,6 +446,7 @@ export default function PassengerHome({ onMenu }) {
 
   async function bookRide() {
     if (!pickup || !drop || !selVehicle || distErr) return
+    haptic('medium')
     // Validate booking for others
     if (bookingFor.type === 'other') {
       if (!bookingFor.name?.trim()) { alert('Enter the name of the person you are booking for.'); return }
@@ -524,9 +538,19 @@ export default function PassengerHome({ onMenu }) {
   function openCancelModal() { if (!ride) return; setShowCancel(true) }
   function onCancelled(result) {
     setShowCancel(false)
+    // Always reset state - even if "ride already ended" (it's done either way)
     setRS('idle'); setRide(null); setDriver(null); setDispatchMsg('')
+    setPickup(null); setDrop(null); setEta(null)
     if (result?.penalty > 0) {
       setTimeout(() => alert(`A cancellation fee of ₹${result.penalty} has been applied to your account.`), 300)
+    }
+  }
+
+  function closeCancelModal() {
+    setShowCancel(false)
+    // If ride is already ended (from backend check), reset anyway
+    if (!ride || ride.ride_status?.includes('cancel') || ride.ride_status === 'no_driver_found') {
+      setRS('idle'); setRide(null); setDriver(null); setDispatchMsg('')
     }
   }
 
@@ -602,6 +626,14 @@ export default function PassengerHome({ onMenu }) {
         </div>
         <div style={{ flex:1, minWidth:0 }}>
           <div className="t-h3">{driver?.name||'Driver'}</div>
+          {driver?.current_lat && pickup && (
+            <div style={{ fontSize:12, color:'var(--green)', fontWeight:700, marginTop:2 }}>
+              {(() => {
+                const dkm = Math.sqrt(Math.pow((driver.current_lat-pickup.lat)*111,2)+Math.pow((driver.current_lng-pickup.lng)*111,2))
+                return `🛵 ~${Math.max(1,Math.round(dkm/0.4))} min away`
+              })()}
+            </div>
+          )}
           <div className="t-tiny t-muted" style={{ overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' }}>{driver?.vehicle_model} - {driver?.vehicle_number}</div>
         </div>
         <div style={{ display:'flex', gap:6 }}>
@@ -632,8 +664,11 @@ export default function PassengerHome({ onMenu }) {
   )
 
   /* === Main Screen === */
-  const sheetH = rideState==='idle' ? (pickup && drop ? '58vh' : SHEET_HEIGHT) : 'auto'
-  const bPad   = rideState==='idle' ? (pickup && drop ? 260 : BOTTOM_PAD) : 180
+  // During active ride: minimal sheet = more map visible (Rapido style)
+  const sheetH = rideState === 'idle'
+    ? (pickup && drop ? '58vh' : SHEET_HEIGHT)
+    : (['matched','tracking'].includes(rideState) ? '36vh' : 'auto')
+  const bPad = rideState === 'idle' ? (pickup && drop ? 260 : BOTTOM_PAD) : 140
 
   return (
     <div style={{ position:'fixed', inset:0, overflow:'hidden' }}>
@@ -645,7 +680,7 @@ export default function PassengerHome({ onMenu }) {
         <CancelRideModal
           ride={ride} role="passenger" userId={profile.id}
           onCancelled={onCancelled}
-          onClose={() => setShowCancel(false)}
+          onClose={closeCancelModal}
         />
       )}
 
@@ -658,6 +693,7 @@ export default function PassengerHome({ onMenu }) {
           driverCoords={effectiveDrvPos}
           nearbyDrivers={rideState==='idle' ? nearbyDrvs : []}
           showRoute={(!!pickup && !!drop && !distErr) || rideState==='tracking' || demoActive}
+          showDriverToPickup={rideState === 'matched'}
           zoom={14}
           bottomPad={bPad}
           onReady={() => setMapReady(true)}
