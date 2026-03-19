@@ -60,85 +60,149 @@ function ensureML(cb) {
 /* -- Driver animation engine ------------------------------------ */
 class DriverAnim {
   constructor() {
-    this.mk=null; this.el=null
-    this.queue=[]; this.cur=null
-    this.from=null; this.to=null
-    this.bearing=0; this.fromB=0; this.toB=0
-    this.hist=[]; this.rafId=null
-    this.startTs=null; this.dur=1800
-    this.lastGpsTs=0; this.paused=false
-    this._vis = this._vis.bind(this)
+    this.mk       = null
+    this.el       = null
+    // Route-following: array of [lng,lat] waypoints from OSRM
+    this.routePts = []   // current road-route segment to follow
+    this.routeIdx = 0    // index into routePts
+    this.cur      = null
+    this.bearing  = 0
+    this.rafId    = null
+    this.startTs  = null
+    this.segDur   = 800  // ms per route segment
+    this.lastGpsTs= 0
+    this.paused   = false
+    this.hist     = []   // GPS history for trail
+    this._vis     = this._vis.bind(this)
     document.addEventListener('visibilitychange', this._vis)
   }
   _vis() {
-    if (document.hidden) { this.paused=true; if(this.rafId){cancelAnimationFrame(this.rafId);this.rafId=null} }
-    else { this.paused=false; if(this.from&&this.to) this._raf() }
+    if (document.hidden) {
+      this.paused = true
+      if (this.rafId) { cancelAnimationFrame(this.rafId); this.rafId = null }
+    } else {
+      this.paused = false
+      if (this.routeIdx < this.routePts.length - 1) this._animNext()
+    }
   }
+
+  // Called with new GPS coordinate — fetch OSRM road route then animate
   push(lng, lat) {
     const now = Date.now()
-    if (this.cur && haversineM(this.cur[0],this.cur[1],lng,lat)<2) return
-    if (this.lastGpsTs>0) this.dur = Math.min((now-this.lastGpsTs)*0.92, 2500)
-    this.lastGpsTs = now
-    this.queue.push([lng,lat])
-    if (!this.rafId && !this.paused) this._next()
-  }
-  _next() {
-    if (!this.queue.length||!this.mk) return
-    const [lng,lat] = this.queue.shift()
-    const from = this.cur||[lng,lat]
-    this.from=from; this.to=[lng,lat]
-    this.fromB=this.bearing
-    this.toB = calcBearing(from[0],from[1],lng,lat)
-    this.hist.push([...from])
-    if (this.hist.length>4) this.hist.shift()
-    if (haversineM(from[0],from[1],lng,lat)<10) this.dur=Math.min(this.dur,600)
-    this.startTs=null; this._raf()
-  }
-  _raf() {
-    if (this.rafId) cancelAnimationFrame(this.rafId)
-    this.rafId = requestAnimationFrame(ts=>this._step(ts))
-  }
-  _step(ts) {
-    if (this.paused||!this.mk||!this.from||!this.to) return
-    if (!this.startTs) this.startTs=ts
-    const raw = Math.min((ts-this.startTs)/this.dur, 1)
-    const dist = haversineM(this.from[0],this.from[1],this.to[0],this.to[1])
-    const t = dist<30 ? easeSmooth(raw) : easeOut(raw)
-    // Catmull-Rom spline for smooth curves
-    let pos
-    if (this.hist.length>=3) {
-      const h=this.hist, p0=h[h.length-2]||h[0], p1=h[h.length-1], p2=this.to
-      const p3=[p2[0]+(p2[0]-p1[0]), p2[1]+(p2[1]-p1[1])]
-      const t2=t*t, t3=t2*t
-      pos=[
-        0.5*((2*p1[0])+(-p0[0]+p2[0])*t+(2*p0[0]-5*p1[0]+4*p2[0]-p3[0])*t2+(-p0[0]+3*p1[0]-3*p2[0]+p3[0])*t3),
-        0.5*((2*p1[1])+(-p0[1]+p2[1])*t+(2*p0[1]-5*p1[1]+4*p2[1]-p3[1])*t2+(-p0[1]+3*p1[1]-3*p2[1]+p3[1])*t3),
-      ]
-    } else {
-      pos=[lerp(this.from[0],this.to[0],t), lerp(this.from[1],this.to[1],t)]
+    if (this.cur && haversineM(this.cur[0], this.cur[1], lng, lat) < 3) return
+    this.hist.push([lng, lat])
+    if (this.hist.length > 60) this.hist.shift()
+
+    const from = this.cur || [lng, lat]
+    const distM = haversineM(from[0], from[1], lng, lat)
+
+    // Very short move: skip OSRM, animate directly
+    if (distM < 30) {
+      this.routePts = [from, [lng, lat]]
+      this.routeIdx = 0
+      this.segDur   = Math.min(now - this.lastGpsTs, 1500) * 0.85 || 600
+      this.lastGpsTs = now
+      if (!this.rafId && !this.paused) this._animNext()
+      return
     }
+
+    // Fetch OSRM road route between from→to
+    this.lastGpsTs = now
+    const url = `https://router.project-osrm.org/route/v1/driving/${from[0]},${from[1]};${lng},${lat}?overview=full&geometries=geojson&steps=false`
+    fetch(url, { signal: AbortSignal.timeout(3000) })
+      .then(r => r.json())
+      .then(data => {
+        if (data.code !== 'Ok' || !data.routes?.[0]) throw new Error('no route')
+        const coords = data.routes[0].geometry.coordinates
+        if (coords.length < 2) throw new Error('too short')
+        // Smooth: add current position as first point
+        this.routePts = [from, ...coords]
+        this.routeIdx = 0
+        const totalDist = data.routes[0].distance || distM
+        const totalTime = Math.min((now - this.lastGpsTs) * 1.1 + 500, 3000)
+        // Per-segment duration proportional to segment length
+        this.segDur = Math.max(300, totalTime / coords.length)
+        if (!this.rafId && !this.paused) this._animNext()
+      })
+      .catch(() => {
+        // Fallback: straight line with smooth interpolation
+        this.routePts = [from, [lng, lat]]
+        this.routeIdx = 0
+        this.segDur   = 1200
+        if (!this.rafId && !this.paused) this._animNext()
+      })
+  }
+
+  _animNext() {
+    if (this.routeIdx >= this.routePts.length - 1) return
+    const from = this.routePts[this.routeIdx]
+    const to   = this.routePts[this.routeIdx + 1]
+    const segDist = haversineM(from[0], from[1], to[0], to[1])
+    // Duration proportional to segment distance (feels natural speed)
+    const dur = Math.max(150, Math.min(this.segDur, segDist * 25))
+
+    this.startTs  = null
+    this._from    = from
+    this._to      = to
+    this._fromBear= this.bearing
+    this._toBear  = calcBearing(from[0], from[1], to[0], to[1])
+    this._dur     = dur
+    this.rafId    = requestAnimationFrame(ts => this._step(ts))
+  }
+
+  _step(ts) {
+    if (this.paused || !this.mk || !this._from || !this._to) return
+    if (!this.startTs) this.startTs = ts
+    const raw = Math.min((ts - this.startTs) / this._dur, 1)
+    const t   = easeOut(raw)
+
+    // Smooth interpolation along road segment
+    const pos = [
+      lerp(this._from[0], this._to[0], t),
+      lerp(this._from[1], this._to[1], t),
+    ]
     this.mk.setLngLat(pos)
-    this.cur=pos
-    const bear = lerpAngle(this.fromB, this.toB, easeSmooth(raw))
+    this.cur = pos
+
+    // Smooth bearing rotation
+    const bear = lerpAngle(this._fromBear, this._toBear, easeSmooth(raw))
     const icon = this.el?.querySelector('.drv-icon')
-    // 🛵 emoji faces left (West), so offset +90° so it faces direction of travel
     if (icon) icon.style.transform = `rotate(${bear}deg)`
-    if (raw<1) { this.rafId=requestAnimationFrame(ts2=>this._step(ts2)) }
-    else { this.cur=this.to; this.bearing=this.toB; this.rafId=null; if(this.queue.length) this._next() }
+
+    if (raw < 1) {
+      this.rafId = requestAnimationFrame(ts2 => this._step(ts2))
+    } else {
+      // Segment done — move to next
+      this.cur     = this._to
+      this.bearing = this._toBear
+      this.rafId   = null
+      this.routeIdx++
+      if (this.routeIdx < this.routePts.length - 1 && !this.paused) {
+        this._animNext()
+      }
+    }
   }
-  attach(mk,el) { this.mk=mk; this.el=el }
-  teleport(lng,lat) {
-    this.cur=[lng,lat]; this.from=[lng,lat]
-    this.queue=[]; this.hist=[[lng,lat]]
-    this.bearing=0   // default: face North (up)
-    if(this.mk) this.mk.setLngLat([lng,lat])
+
+  attach(mk, el) { this.mk = mk; this.el = el }
+
+  teleport(lng, lat) {
+    if (this.rafId) cancelAnimationFrame(this.rafId)
+    this.rafId    = null
+    this.cur      = [lng, lat]
+    this.routePts = [[lng, lat]]
+    this.routeIdx = 0
+    this.hist     = [[lng, lat]]
+    this.bearing  = 0
+    if (this.mk) this.mk.setLngLat([lng, lat])
     const icon = this.el?.querySelector('.drv-icon')
-    if(icon) icon.style.transform = 'rotate(0deg)'
+    if (icon) icon.style.transform = 'rotate(0deg)'
   }
+
   destroy() {
-    if(this.rafId) cancelAnimationFrame(this.rafId)
-    document.removeEventListener('visibilitychange',this._vis)
-    this.mk=null; this.el=null; this.queue=[]; this.hist=[]; this.rafId=null
+    if (this.rafId) cancelAnimationFrame(this.rafId)
+    document.removeEventListener('visibilitychange', this._vis)
+    this.mk = null; this.el = null
+    this.routePts = []; this.hist = []; this.rafId = null
   }
 }
 
@@ -196,14 +260,28 @@ export default function MapView({
       map.addSource('route-preview', { type:'geojson', data:emptyGJ() })
       map.addLayer({ id:'route-preview', type:'line', source:'route-preview', layout:{'line-join':'round','line-cap':'round'}, paint:{'line-color':'#FF5F1F','line-width':3,'line-opacity':0.5,'line-dasharray':[4,4]} })
       mapRef.current=map; ready.current=true
+
+      // ResizeObserver: auto-resize map when container size changes
+      // (fixes blank map when bottom sheet height changes)
+      if (typeof ResizeObserver !== 'undefined' && divRef.current) {
+        const ro = new ResizeObserver(() => {
+          try { mapRef.current?.resize() } catch {}
+        })
+        ro.observe(divRef.current)
+        mapRef.current._ro = ro
+      }
+
       if(onReady) onReady()
       syncAll()
     })
   }
 
   /* -- Sync on prop change -- */
-  useEffect(() => { if(ready.current) syncAll() },
-    [center,pickupCoords,dropCoords,driverCoords,nearbyDrivers,showRoute,bottomPad]) // eslint-disable-line
+  useEffect(() => {
+    if (!ready.current) return
+    try { mapRef.current?.resize() } catch {}  // resize before sync
+    syncAll()
+  }, [center,pickupCoords,dropCoords,driverCoords,nearbyDrivers,showRoute,showDriverToPickup,zoom,bottomPad]) // eslint-disable-line
 
   function syncAll() {
     if(!mapRef.current||!ready.current) return
