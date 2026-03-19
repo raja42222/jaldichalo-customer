@@ -16,10 +16,15 @@ export function checkRateLimit(key, maxAttempts = 3, windowMs = 5 * 60 * 1000) {
   const now = Date.now()
   const entry = _limits.get(key) || { count: 0, windowStart: now }
   if (now - entry.windowStart > windowMs) {
-    _limits.set(key, { count: 1, windowStart: now }); return true
+    _limits.set(key, { count: 1, windowStart: now })
+    return { allowed: true, remaining: maxAttempts - 1, retryAfterSec: 0 }
   }
-  if (entry.count >= maxAttempts) return false
-  _limits.set(key, { ...entry, count: entry.count + 1 }); return true
+  if (entry.count >= maxAttempts) {
+    const retryAfterSec = Math.ceil((windowMs - (now - entry.windowStart)) / 1000)
+    return { allowed: false, remaining: 0, retryAfterSec }
+  }
+  _limits.set(key, { ...entry, count: entry.count + 1 })
+  return { allowed: true, remaining: maxAttempts - entry.count - 1, retryAfterSec: 0 }
 }
 
 export function resetRateLimit(key) { _limits.delete(key) }
