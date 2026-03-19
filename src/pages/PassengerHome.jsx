@@ -255,26 +255,34 @@ export default function PassengerHome({ onMenu }) {
 
   function recenterGPS() {
     setLocating(true)
-    getLocation(
-      async (lat, lng, accuracy) => {
+
+    // Show cached position instantly (fast response)
+    const cached = loadGPS()
+    if (cached) {
+      setGps([cached.lat, cached.lng])
+      setMapCenter([cached.lat, cached.lng])
+    }
+
+    if (!navigator.geolocation) { setLocating(false); return }
+
+    // Auto-stop loading after 10s
+    const fallback = setTimeout(() => setLocating(false), 10000)
+
+    navigator.geolocation.getCurrentPosition(
+      async (pos) => {
+        clearTimeout(fallback)
+        const { latitude: lat, longitude: lng } = pos.coords
+        saveGPS(lat, lng)
         setGps([lat, lng])
         setMapCenter([lat, lng])
         setLocating(false)
         const addr = await reverseGeocode(lat, lng)
         setGpsAddr(addr)
-        // Update pickup if user hasn't manually set one
-        setPickup(prev => {
-          if (!prev || prev.id === 'current') {
-            return { id:'current', short:addr, label:addr, lat, lng }
-          }
-          return prev
-        })
+        setPickup(prev => (!prev || prev.id === 'current')
+          ? { id:'current', short:addr, label:addr, lat, lng } : prev)
       },
-      () => {
-        setLocating(false)
-        // Show permission denied message
-        alert('Location access denied. Please enable GPS in your phone settings and try again.')
-      }
+      () => { clearTimeout(fallback); setLocating(false) },
+      { enableHighAccuracy: true, timeout: 10000, maximumAge: 0 }
     )
   }
 

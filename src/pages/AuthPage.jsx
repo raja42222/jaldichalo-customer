@@ -1,4 +1,4 @@
-import { useState, useRef, useEffect } from 'react'
+import React, { useState, useRef, useEffect } from 'react'
 import { supabase } from '../lib/supabase'
 import { checkRateLimit, resetRateLimit, IS_DEMO, sanitizePhone, sanitizeName, getDeviceFingerprint } from '../lib/security'
 import { useAuth } from '../context/AuthContext'
@@ -173,137 +173,350 @@ export default function AuthPage() {
   }
   function otpKey(i, e) { if(e.key==='Backspace'&&!otp[i]&&i>0) otpRefs.current[i-1]?.focus() }
 
-  const pg = { position:'fixed', inset:0, background:'#fff', display:'flex', flexDirection:'column' }
-  const BackIcon = () => <svg width="22" height="22" fill="none" stroke="currentColor" strokeWidth="2.5" viewBox="0 0 24 24"><polyline points="15 18 9 12 15 6"/></svg>
+  // -- Background animated render wrapper --------------------
+  const brand  = '#FF5F1F'
+  const brand2 = '#FF9500'
 
-  const Hdr = ({ title, sub, back }) => (
-    <div style={{ background:'linear-gradient(135deg,#FF5F1F,#FF8C00)', padding:'calc(env(safe-area-inset-top,0px)+14px) 20px 22px', flexShrink:0 }}>
-      {back&&<button onClick={back} style={{ background:'rgba(255,255,255,0.25)', border:'none', borderRadius:10, width:36, height:36, display:'flex', alignItems:'center', justifyContent:'center', cursor:'pointer', marginBottom:12, color:'#fff' }}><BackIcon/></button>}
-      <div style={{ color:'#fff' }}>
-        <div style={{ fontSize:23, fontWeight:800 }}>{title}</div>
-        {sub&&<div style={{ fontSize:13, opacity:0.85, marginTop:2 }}>{sub}</div>}
+  function AuthBg({ children, backFn }) {
+    const canvasRef = React.useRef(null)
+    const animRef   = React.useRef(null)
+
+    React.useEffect(() => {
+      const canvas = canvasRef.current
+      if (!canvas) return
+      const dpr = window.devicePixelRatio || 1
+      const W = canvas.offsetWidth, H = canvas.offsetHeight
+      canvas.width = W * dpr; canvas.height = H * dpr
+      const ctx = canvas.getContext('2d')
+      ctx.scale(dpr, dpr)
+
+      const icons = ['🛵','🛵','🛵','🛺','🚗','🛵','🛺','🚗','🛵','🛺']
+      const particles = Array.from({ length: 20 }, (_, i) => ({
+        x: Math.random()*W, y: H + Math.random()*H,
+        vx:(Math.random()-0.5)*0.4, vy:-(Math.random()*0.45+0.12),
+        size:Math.random()*10+12, alpha:Math.random()*0.28+0.06,
+        icon:icons[i%icons.length], rot:Math.random()*12-6,
+        rotV:(Math.random()-0.5)*0.15, phase:Math.random()*Math.PI*2,
+        wobble:Math.random()*0.7+0.3,
+      }))
+
+      let t = 0
+      function draw() {
+        ctx.clearRect(0,0,W,H); t+=0.009
+        particles.forEach(p => {
+          p.x += p.vx + Math.sin(t*p.wobble+p.phase)*0.2
+          p.y += p.vy; p.rot += p.rotV
+          if(p.y<-50){p.y=H+20;p.x=Math.random()*W}
+          if(p.x<-50)p.x=W+20; if(p.x>W+50)p.x=-20
+          const yF=1-p.y/H
+          const fade=Math.min(1,Math.max(0,Math.sin(yF*Math.PI)))
+          ctx.save()
+          ctx.globalAlpha=p.alpha*fade*(0.55+Math.sin(t*0.6+p.phase)*0.38)
+          ctx.translate(p.x,p.y); ctx.rotate(p.rot*Math.PI/180)
+          ctx.font=`${p.size}px serif`; ctx.textAlign='center'; ctx.textBaseline='middle'
+          ctx.fillText(p.icon,0,0); ctx.restore()
+        })
+        animRef.current = requestAnimationFrame(draw)
+      }
+      draw()
+      return () => { if(animRef.current) cancelAnimationFrame(animRef.current) }
+    }, [])
+
+    return (
+      <div style={{ position:'fixed', inset:0, overflow:'hidden',
+        background:'linear-gradient(160deg, #060610 0%, #160700 45%, #050D05 85%, #060610 100%)',
+        fontFamily:"'Plus Jakarta Sans',system-ui,sans-serif" }}>
+        <style>{`
+          @keyframes ab1{0%,100%{transform:translate(0,0)scale(1)rotate(0deg)}25%{transform:translate(22px,-16px)scale(1.07)rotate(3deg)}50%{transform:translate(-14px,20px)scale(0.95)rotate(-2deg)}75%{transform:translate(18px,8px)scale(1.04)rotate(2deg)}}
+          @keyframes ab2{0%,100%{transform:translate(0,0)scale(1)}33%{transform:translate(-20px,16px)scale(1.10)}66%{transform:translate(16px,-12px)scale(0.93)}}
+          @keyframes ab3{0%,100%{transform:translate(0,0)scale(1)}50%{transform:translate(10px,20px)scale(1.08)}}
+          @keyframes authCard{0%{opacity:0;transform:scale(0.93) translateY(20px)}100%{opacity:1;transform:scale(1) translateY(0)}}
+          @keyframes authGlare{0%{left:-80%;opacity:0}10%{opacity:1}90%{opacity:1}100%{left:180%;opacity:0}}
+          @keyframes authFloat{0%,100%{transform:translateY(0)}50%{transform:translateY(-5px)}}
+          .auth-card-anim{animation:authCard 0.6s cubic-bezier(0.16,1,0.3,1) both}
+          .auth-glare{animation:authGlare 5s ease-in-out 2s infinite}
+          .auth-float{animation:authFloat 4s ease-in-out infinite}
+        `}</style>
+
+        {/* Canvas */}
+        <canvas ref={canvasRef} style={{ position:'absolute',inset:0,width:'100%',height:'100%',pointerEvents:'none' }}/>
+
+        {/* Blobs */}
+        <div style={{ position:'absolute',top:'-30%',left:'-30%',width:'80%',height:'80%',borderRadius:'50%',background:`radial-gradient(circle, ${brand}52 0%, transparent 65%)`,filter:'blur(42px)',animation:'ab1 9s ease-in-out infinite',pointerEvents:'none' }}/>
+        <div style={{ position:'absolute',bottom:'-25%',right:'-30%',width:'90%',height:'90%',borderRadius:'50%',background:`radial-gradient(circle, ${brand2}3E 0%, transparent 60%)`,filter:'blur(55px)',animation:'ab2 11s ease-in-out infinite',pointerEvents:'none' }}/>
+        <div style={{ position:'absolute',top:'20%',left:'5%',width:'75%',height:'75%',borderRadius:'50%',background:'radial-gradient(circle at 40% 40%, rgba(255,140,40,0.09) 0%, transparent 65%)',filter:'blur(32px)',animation:'ab3 13s ease-in-out infinite',pointerEvents:'none' }}/>
+
+        {/* Back button overlay */}
+        {backFn && (
+          <button onClick={backFn} style={{
+            position:'absolute',top:`calc(env(safe-area-inset-top,0px) + 12px)`,left:14,
+            zIndex:20, width:40,height:40,borderRadius:'50%',
+            background:'rgba(255,255,255,0.15)',backdropFilter:'blur(12px)',
+            border:'1px solid rgba(255,255,255,0.2)',cursor:'pointer',
+            display:'flex',alignItems:'center',justifyContent:'center',color:'#fff',
+          }}>
+            <svg width="20" height="20" fill="none" stroke="currentColor" strokeWidth="2.5" viewBox="0 0 24 24"><polyline points="15 18 9 12 15 6"/></svg>
+          </button>
+        )}
+
+        {/* Glass card */}
+        <div style={{
+          position:'absolute',inset:0,
+          display:'flex',flexDirection:'column',alignItems:'center',
+          justifyContent:'center',
+          padding:`calc(env(safe-area-inset-top,0px) + 16px) 20px calc(env(safe-area-inset-bottom,0px) + 20px)`,
+          overflowY:'auto',
+        }}>
+          <div className="auth-card-anim auth-float" style={{
+            width:'100%',maxWidth:400,
+            background:'rgba(255,255,255,0.08)',
+            backdropFilter:'blur(36px) saturate(1.4)',
+            WebkitBackdropFilter:'blur(36px) saturate(1.4)',
+            border:'1px solid rgba(255,255,255,0.14)',
+            borderRadius:28,
+            padding:'28px 24px 28px',
+            position:'relative',overflow:'hidden',
+            boxShadow:`0 0 0 1px rgba(255,255,255,0.04),0 28px 64px rgba(0,0,0,0.6),0 0 60px ${brand}18,inset 0 1px 0 rgba(255,255,255,0.20)`,
+          }}>
+            {/* Top ridge */}
+            <div style={{ position:'absolute',top:0,left:'6%',right:'6%',height:1,background:'linear-gradient(90deg,transparent,rgba(255,255,255,0.32),transparent)',pointerEvents:'none' }}/>
+            {/* Glare sweep */}
+            <div className="auth-glare" style={{ position:'absolute',top:0,bottom:0,width:'25%',background:'linear-gradient(90deg,transparent,rgba(255,255,255,0.055),transparent)',pointerEvents:'none' }}/>
+
+            {children}
+          </div>
+        </div>
       </div>
-    </div>
-  )
-  const Btn = ({ label, fn, off }) => (
-    <button onClick={fn} disabled={off||busy}
-      style={{ padding:'15px', width:'100%', border:'none', borderRadius:16, background:off||busy?'#E0E0E0':'linear-gradient(135deg,#FF5F1F,#FF8C00)', color:off||busy?'#999':'#fff', fontSize:16, fontWeight:800, cursor:off||busy?'default':'pointer', fontFamily:'inherit', transition:'all 0.15s' }}>
-      {busy?'Please wait...':label}
-    </button>
-  )
-  const Divider = () => (
-    <div style={{ display:'flex', alignItems:'center', gap:12, margin:'20px 0' }}>
-      <div style={{ flex:1, height:1, background:'#E0E0E0' }} />
-      <span style={{ fontSize:13, color:'#aaa', fontWeight:600 }}>or</span>
-      <div style={{ flex:1, height:1, background:'#E0E0E0' }} />
-    </div>
-  )
+    )
+  }
 
-  /* HOME: choose login method */
+  // -- Input component (dark glass style) ------------------
+  function GlassInp({ val, set, ph, type='text', mono, autoFocus, onSubmit }) {
+    return (
+      <input type={type} placeholder={ph} value={val} autoFocus={!!autoFocus}
+        autoComplete="off" autoCorrect="off" spellCheck={false}
+        autoCapitalize={type==='email'||mono?'none':'words'}
+        enterKeyHint={onSubmit?'done':'next'}
+        onChange={e=>set(e.target.value)}
+        onKeyDown={e=>{if(e.key==='Enter'&&onSubmit){e.preventDefault();onSubmit()}}}
+        style={{
+          padding:'13px 16px', borderRadius:14, width:'100%', display:'block',
+          border:`1.5px solid ${String(val).trim()?'rgba(255,95,31,0.8)':'rgba(255,255,255,0.15)'}`,
+          fontSize:15, fontFamily:'inherit', outline:'none',
+          background:'rgba(255,255,255,0.10)',
+          backdropFilter:'blur(8px)',
+          color:'#fff',
+          transition:'border-color 0.18s, background 0.18s',
+          ...(mono?{letterSpacing:'0.07em',fontWeight:700}:{}),
+        }}
+      />
+    )
+  }
+
+  // -- Branded action button --------------------------------
+  function GlassBtn({ label, fn, off }) {
+    return (
+      <button onClick={fn} disabled={off||busy} style={{
+        padding:'15px',width:'100%',border:'none',borderRadius:16,
+        background: off||busy ? 'rgba(255,255,255,0.1)' : `linear-gradient(135deg,${brand},${brand2})`,
+        color: off||busy ? 'rgba(255,255,255,0.35)' : '#fff',
+        fontSize:16,fontWeight:800,cursor:off||busy?'default':'pointer',
+        fontFamily:'inherit',
+        boxShadow: off||busy ? 'none' : `0 6px 20px ${brand}55`,
+        transition:'all 0.15s',
+      }}>
+        {busy?'Please wait…':label}
+      </button>
+    )
+  }
+
+  // -- Error display ----------------------------------------
+  function ErrBox({ msg }) {
+    if (!msg) return null
+    const isGood = msg.includes('sent') || msg.includes('success')
+    return (
+      <div style={{
+        fontSize:13, fontWeight:600, padding:'10px 14px', borderRadius:12,
+        marginBottom:14, lineHeight:1.4,
+        background: isGood ? 'rgba(22,163,74,0.2)' : 'rgba(220,38,38,0.2)',
+        border: `1px solid ${isGood?'rgba(34,197,94,0.4)':'rgba(239,68,68,0.4)'}`,
+        color: isGood ? '#4ade80' : '#fca5a5',
+      }}>{msg}</div>
+    )
+  }
+
+  // -- App logo + tagline -----------------------------------
+  function AppLogo() {
+    return (
+      <div style={{ display:'flex',alignItems:'center',gap:12,marginBottom:24 }}>
+        <div style={{
+          width:44,height:44,borderRadius:14,
+          background:`linear-gradient(135deg,${brand},${brand2})`,
+          display:'flex',alignItems:'center',justifyContent:'center',
+          fontSize:22, flexShrink:0,
+          boxShadow:`0 6px 18px ${brand}55`,
+        }}>⚡</div>
+        <div>
+          <div style={{ fontSize:20,fontWeight:900,letterSpacing:'-0.5px',
+            background:`linear-gradient(90deg,#fff 30%,rgba(255,220,130,1) 55%,#fff 80%)`,
+            backgroundSize:'300px 100%',backgroundClip:'text',
+            WebkitBackgroundClip:'text',WebkitTextFillColor:'transparent',
+          }}>rideJi</div>
+          <div style={{ fontSize:12,color:'rgba(255,255,255,0.5)',marginTop:1 }}>Need a Ride? Get rideJi.</div>
+        </div>
+      </div>
+    )
+  }
+
+  // -- Divider ----------------------------------------------
+  function GlassDivider() {
+    return (
+      <div style={{ display:'flex',alignItems:'center',gap:10,margin:'18px 0' }}>
+        <div style={{ flex:1,height:1,background:'rgba(255,255,255,0.12)' }}/>
+        <span style={{ fontSize:12,color:'rgba(255,255,255,0.4)',fontWeight:600 }}>or</span>
+        <div style={{ flex:1,height:1,background:'rgba(255,255,255,0.12)' }}/>
+      </div>
+    )
+  }
+
+  /* -- HOME STEP -------------------------------------------- */
   if (step==='home') return (
-    <div style={pg}>
-      <div style={{ background:'linear-gradient(135deg,#FF5F1F,#FF8C00)', padding:'calc(env(safe-area-inset-top,0px)+20px) 20px 28px', flexShrink:0 }}>
-        <div style={{ display:'flex', alignItems:'center', gap:14, marginBottom:20 }}>
-          <div style={{ width:52, height:52, borderRadius:16, background:'rgba(255,255,255,0.22)', display:'flex', alignItems:'center', justifyContent:'center', fontSize:26 }}>⚡</div>
-          <div>
-            <div style={{ fontFamily:"'Space Grotesk',sans-serif", fontWeight:700, fontSize:22, color:'#fff' }}>Jaldi Chalo</div>
-            <div style={{ fontSize:12, color:'rgba(255,255,255,0.8)', marginTop:1 }}>Book rides instantly</div>
-          </div>
-        </div>
-        <HowrahBridge />
+    <AuthBg>
+      <AppLogo />
+
+      <div style={{ marginBottom:22 }}>
+        <div style={{ fontSize:22,fontWeight:800,color:'#fff',marginBottom:4 }}>Welcome back</div>
+        <div style={{ fontSize:14,color:'rgba(255,255,255,0.5)' }}>Sign in to book your ride</div>
       </div>
 
-      <div style={{ flex:1, overflowY:'auto', padding:'28px 20px' }}>
-        <div style={{ marginBottom:28 }}>
-          <div style={{ fontSize:22, fontWeight:800, marginBottom:4 }}>Welcome to Jaldi Chalo</div>
-          <div style={{ fontSize:14, color:'#888' }}>Sign in to book your ride</div>
-        </div>
+      {/* Google */}
+      <button onClick={loginGoogle} disabled={busy} style={{
+        width:'100%',padding:'14px',border:'1.5px solid rgba(255,255,255,0.2)',
+        borderRadius:14,background:'rgba(255,255,255,0.10)',backdropFilter:'blur(8px)',
+        display:'flex',alignItems:'center',justifyContent:'center',gap:10,
+        fontSize:14,fontWeight:700,cursor:'pointer',fontFamily:'inherit',marginBottom:10,
+        color:'#fff',transition:'all 0.15s',
+      }}>
+        <GoogleIcon /> Continue with Google
+      </button>
 
-        {/* Google */}
-        <button onClick={loginGoogle} disabled={busy}
-          style={{ width:'100%', padding:'15px', border:'2px solid #E0E0E0', borderRadius:16, background:'#fff', display:'flex', alignItems:'center', justifyContent:'center', gap:10, fontSize:15, fontWeight:700, cursor:'pointer', fontFamily:'inherit', marginBottom:12, transition:'border-color 0.15s' }}>
-          <GoogleIcon /> Continue with Google
-        </button>
+      {/* WhatsApp */}
+      <button onClick={()=>{setChannel('whatsapp');setStep('phone')}} disabled={busy} style={{
+        width:'100%',padding:'14px',border:'1.5px solid rgba(37,211,102,0.4)',
+        borderRadius:14,background:'rgba(37,211,102,0.08)',backdropFilter:'blur(8px)',
+        display:'flex',alignItems:'center',justifyContent:'center',gap:10,
+        fontSize:14,fontWeight:700,cursor:'pointer',fontFamily:'inherit',marginBottom:10,
+        color:'#4ade80',transition:'all 0.15s',
+      }}>
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="#4ade80"><path d="M17.472 14.382c-.297-.149-1.758-.867-2.03-.967-.273-.099-.471-.148-.67.15-.197.297-.767.966-.94 1.164-.173.199-.347.223-.644.075-.297-.15-1.255-.463-2.39-1.475-.883-.788-1.48-1.761-1.653-2.059-.173-.297-.018-.458.13-.606.134-.133.298-.347.446-.52.149-.174.198-.298.298-.497.099-.198.05-.371-.025-.52-.075-.149-.669-1.612-.916-2.207-.242-.579-.487-.5-.669-.51-.173-.008-.371-.01-.57-.01-.198 0-.52.074-.792.372-.272.297-1.04 1.016-1.04 2.479 0 1.462 1.065 2.875 1.213 3.074.149.198 2.096 3.2 5.077 4.487.709.306 1.262.489 1.694.625.712.227 1.36.195 1.871.118.571-.085 1.758-.719 2.006-1.413.248-.694.248-1.289.173-1.413-.074-.124-.272-.198-.57-.347m-5.421 7.403h-.004a9.87 9.87 0 01-5.031-1.378l-.361-.214-3.741.982.998-3.648-.235-.374a9.86 9.86 0 01-1.51-5.26c.001-5.45 4.436-9.884 9.888-9.884 2.64 0 5.122 1.03 6.988 2.898a9.825 9.825 0 012.893 6.994c-.003 5.45-4.437 9.884-9.885 9.884m8.413-18.297A11.815 11.815 0 0012.05 0C5.495 0 .16 5.335.157 11.892c0 2.096.547 4.142 1.588 5.945L.057 24l6.305-1.654a11.882 11.882 0 005.683 1.448h.005c6.554 0 11.89-5.335 11.893-11.893a11.821 11.821 0 00-3.48-8.413z"/></svg>
+        Continue with WhatsApp
+      </button>
 
-        {/* WhatsApp */}
-        <button onClick={() => { setChannel('whatsapp'); setStep('phone') }}
-          style={{ width:'100%', padding:'15px', border:'2px solid #25D366', borderRadius:16, background:'#F0FDF4', display:'flex', alignItems:'center', justifyContent:'center', gap:10, fontSize:15, fontWeight:700, cursor:'pointer', fontFamily:'inherit', marginBottom:12, color:'#16A34A' }}>
-          <svg width="20" height="20" viewBox="0 0 24 24" fill="#25D366"><path d="M17.472 14.382c-.297-.149-1.758-.867-2.03-.967-.273-.099-.471-.148-.67.15-.197.297-.767.966-.94 1.164-.173.199-.347.223-.644.075-.297-.15-1.255-.463-2.39-1.475-.883-.788-1.48-1.761-1.653-2.059-.173-.297-.018-.458.13-.606.134-.133.298-.347.446-.52.149-.174.198-.298.298-.497.099-.198.05-.371-.025-.52-.075-.149-.669-1.612-.916-2.207-.242-.579-.487-.5-.669-.51-.173-.008-.371-.01-.57-.01-.198 0-.52.074-.792.372-.272.297-1.04 1.016-1.04 2.479 0 1.462 1.065 2.875 1.213 3.074.149.198 2.096 3.2 5.077 4.487.709.306 1.262.489 1.694.625.712.227 1.36.195 1.871.118.571-.085 1.758-.719 2.006-1.413.248-.694.248-1.289.173-1.413-.074-.124-.272-.198-.57-.347m-5.421 7.403h-.004a9.87 9.87 0 01-5.031-1.378l-.361-.214-3.741.982.998-3.648-.235-.374a9.86 9.86 0 01-1.51-5.26c.001-5.45 4.436-9.884 9.888-9.884 2.64 0 5.122 1.03 6.988 2.898a9.825 9.825 0 012.893 6.994c-.003 5.45-4.437 9.884-9.885 9.884m8.413-18.297A11.815 11.815 0 0012.05 0C5.495 0 .16 5.335.157 11.892c0 2.096.547 4.142 1.588 5.945L.057 24l6.305-1.654a11.882 11.882 0 005.683 1.448h.005c6.554 0 11.89-5.335 11.893-11.893a11.821 11.821 0 00-3.48-8.413z"/></svg>
-          Continue with WhatsApp
-        </button>
+      {/* Mobile */}
+      <button onClick={()=>{setChannel('sms');setStep('phone')}} disabled={busy} style={{
+        width:'100%',padding:'14px',border:'1.5px solid rgba(255,255,255,0.15)',
+        borderRadius:14,background:'rgba(255,255,255,0.07)',backdropFilter:'blur(8px)',
+        display:'flex',alignItems:'center',justifyContent:'center',gap:10,
+        fontSize:14,fontWeight:700,cursor:'pointer',fontFamily:'inherit',
+        color:'rgba(255,255,255,0.7)',transition:'all 0.15s',
+      }}>
+        <svg width="18" height="18" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24"><rect x="5" y="2" width="14" height="20" rx="2"/><line x1="12" y1="18" x2="12" y2="18.01"/></svg>
+        Continue with Mobile Number
+      </button>
 
-        {/* Mobile */}
-        <button onClick={() => { setChannel('sms'); setStep('phone') }}
-          style={{ width:'100%', padding:'15px', border:'2px solid #E0E0E0', borderRadius:16, background:'#F9F9F9', display:'flex', alignItems:'center', justifyContent:'center', gap:10, fontSize:15, fontWeight:700, cursor:'pointer', fontFamily:'inherit', color:'#555' }}>
-          <svg width="20" height="20" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24"><rect x="5" y="2" width="14" height="20" rx="2"/><line x1="12" y1="18" x2="12" y2="18.01"/></svg>
-          Continue with Mobile Number
-        </button>
+      <ErrBox msg={error} />
 
-        {error&&<div style={{ marginTop:16, fontSize:13, color:error.includes('sent')?'#16A34A':'#DC2626', padding:'10px 14px', background:error.includes('sent')?'#ECFDF5':'#FEF2F2', borderRadius:10 }}>{error}</div>}
-
-        <div style={{ textAlign:'center', marginTop:24, fontSize:12, color:'#aaa', lineHeight:1.6 }}>
-          By continuing, you agree to our Terms of Service and Privacy Policy
-        </div>
+      <div style={{ textAlign:'center',marginTop:18,fontSize:11,color:'rgba(255,255,255,0.3)',lineHeight:1.6 }}>
+        By continuing, you agree to our Terms of Service and Privacy Policy
       </div>
-    </div>
+    </AuthBg>
   )
 
-  /* PHONE step */
+  /* -- PHONE STEP ------------------------------------------- */
   if (step==='phone') return (
-    <div style={pg}>
-      <Hdr title="Enter Mobile Number" sub={`We'll send OTP via ${channel==='whatsapp'?'WhatsApp':'SMS'}`} back={()=>setStep('home')} />
-      <div style={{ flex:1, overflowY:'auto', padding:'28px 20px' }}>
-        <div style={{ display:'flex', gap:8, marginBottom:8 }}>
-          <div style={{ padding:'14px 16px', background:'#F5F5F5', borderRadius:14, display:'flex', alignItems:'center', gap:8, flexShrink:0, fontSize:15, fontWeight:700 }}>
-            <span>🇮🇳</span> +91
-          </div>
-          <div style={{ flex:1 }}><Inp val={phone} set={v=>setPhone(v.replace(/\D/g,''))} ph="10-digit number" type="tel" autoFocus onSubmit={sendOTP} /></div>
-        </div>
-        {error&&<div style={{ fontSize:13, color:error.includes('sent')?'#16A34A':'#DC2626', marginBottom:14, padding:'10px 14px', background:error.includes('sent')?'#ECFDF5':'#FEF2F2', borderRadius:10 }}>{error}</div>}
-        <Btn label={`Send OTP via ${channel==='whatsapp'?'WhatsApp':'SMS'} ->`} fn={sendOTP} off={phone.length!==10} />
+    <AuthBg backFn={()=>setStep('home')}>
+      <AppLogo />
+      <div style={{ marginBottom:20 }}>
+        <div style={{ fontSize:20,fontWeight:800,color:'#fff',marginBottom:4 }}>Enter Mobile Number</div>
+        <div style={{ fontSize:13,color:'rgba(255,255,255,0.5)' }}>We'll send OTP via {channel==='whatsapp'?'WhatsApp':'SMS'}</div>
       </div>
-    </div>
+
+      <div style={{ display:'flex',gap:8,marginBottom:12 }}>
+        <div style={{
+          padding:'13px 14px',background:'rgba(255,255,255,0.10)',backdropFilter:'blur(8px)',
+          borderRadius:14,border:'1.5px solid rgba(255,255,255,0.15)',
+          display:'flex',alignItems:'center',gap:6,flexShrink:0,fontSize:14,fontWeight:700,color:'#fff',
+        }}>🇮🇳 +91</div>
+        <div style={{ flex:1 }}>
+          <GlassInp val={phone} set={v=>setPhone(v.replace(/\D/g,'').slice(0,10))} ph="10-digit number" type="tel" autoFocus onSubmit={sendOTP} />
+        </div>
+      </div>
+
+      <ErrBox msg={error} />
+      <GlassBtn label={`Send OTP via ${channel==='whatsapp'?'WhatsApp':'SMS'} →`} fn={sendOTP} off={phone.length!==10} />
+    </AuthBg>
   )
 
-  /* OTP step */
+  /* -- OTP STEP --------------------------------------------- */
   if (step==='otp') return (
-    <div style={pg}>
-      <Hdr title="Verify Number" sub={`Code sent to +91 ${phone}`} back={()=>setStep('phone')} />
-      <div style={{ flex:1, overflowY:'auto', padding:'28px 20px' }}>
-        <div style={{ display:'flex', gap:10, justifyContent:'center', marginBottom:20 }}>
-          {otp.map((d,i)=>(
-            <input key={i} ref={el=>otpRefs.current[i]=el}
-              style={{ width:46, height:58, textAlign:'center', fontSize:24, fontWeight:900, background:'#F5F5F5', border:`2px solid ${d?'#FF5F1F':'#E0E0E0'}`, borderRadius:14, outline:'none', fontFamily:'inherit', color:'#111', userSelect:'text', WebkitUserSelect:'text', transition:'border-color 0.15s' }}
-              value={d} maxLength={1} inputMode="numeric"
-              onChange={e=>otpChange(i,e.target.value)} onKeyDown={e=>otpKey(i,e)}
-            />
-          ))}
-        </div>
-        {error&&<div style={{ fontSize:13, color:error.includes('sent')?'#16A34A':'#DC2626', marginBottom:14, padding:'10px 14px', background:error.includes('sent')?'#ECFDF5':'#FEF2F2', borderRadius:10, textAlign:'center' }}>{error}</div>}
-        <Btn label="Verify OTP ->" fn={verifyOTP} off={otp.join('').length!==6} />
-        <div style={{ textAlign:'center', marginTop:18 }}>
-          {timer>0 ? <span style={{ fontSize:13, color:'#888' }}>Resend in {timer}s</span>
-            : <button onClick={()=>{setOtp(['','','','','','']);setStep('phone')}} style={{ fontSize:13, color:'#FF5F1F', background:'none', border:'none', fontWeight:700, cursor:'pointer', fontFamily:'inherit' }}>Resend / Change number</button>
-          }
-        </div>
+    <AuthBg backFn={()=>setStep('phone')}>
+      <AppLogo />
+      <div style={{ marginBottom:20 }}>
+        <div style={{ fontSize:20,fontWeight:800,color:'#fff',marginBottom:4 }}>Verify Number</div>
+        <div style={{ fontSize:13,color:'rgba(255,255,255,0.5)' }}>Code sent to +91 {phone}</div>
       </div>
-    </div>
+
+      {/* OTP boxes */}
+      <div style={{ display:'flex',gap:8,justifyContent:'center',marginBottom:18 }}>
+        {otp.map((d,i)=>(
+          <input key={i} ref={el=>otpRefs.current[i]=el}
+            value={d} maxLength={1} inputMode="numeric"
+            onChange={e=>otpChange(i,e.target.value)} onKeyDown={e=>otpKey(i,e)}
+            style={{
+              width:46,height:58,textAlign:'center',fontSize:24,fontWeight:900,
+              background:d?'rgba(255,95,31,0.2)':'rgba(255,255,255,0.08)',
+              border:`2px solid ${d?brand:'rgba(255,255,255,0.2)'}`,
+              borderRadius:14,outline:'none',fontFamily:'inherit',color:'#fff',
+              userSelect:'text',WebkitUserSelect:'text',
+              transition:'all 0.18s',boxShadow:d?`0 0 12px ${brand}44`:'none',
+            }}
+          />
+        ))}
+      </div>
+
+      <ErrBox msg={error} />
+      <GlassBtn label="Verify OTP →" fn={verifyOTP} off={otp.join('').length!==6} />
+
+      <div style={{ textAlign:'center',marginTop:16 }}>
+        {timer>0
+          ? <span style={{ fontSize:13,color:'rgba(255,255,255,0.4)' }}>Resend in {timer}s</span>
+          : <button onClick={()=>{setOtp(['','','','','','']);setStep('phone')}} style={{ fontSize:13,color:brand,background:'none',border:'none',fontWeight:700,cursor:'pointer',fontFamily:'inherit' }}>
+              Resend / Change number
+            </button>
+        }
+      </div>
+    </AuthBg>
   )
 
-  /* NAME step */
+  /* -- NAME STEP -------------------------------------------- */
   if (step==='name') return (
-    <div style={pg}>
-      <Hdr title="Create Account" sub="Just your name to get started" back={()=>setStep('otp')} />
-      <div style={{ flex:1, overflowY:'auto', padding:'28px 20px' }}>
-        <div style={{ display:'flex', flexDirection:'column', gap:12, marginBottom:18 }}>
-          <Inp val={name} set={setName} ph="Your full name" autoFocus />
-          <Inp val={email} set={setEmail} ph="Email (optional)" type="email" />
-        </div>
-        {error&&<div style={{ color:'#DC2626', fontSize:13, marginBottom:14, padding:'10px 14px', background:'#FEF2F2', borderRadius:10 }}>{error}</div>}
-        <Btn label="Start Riding ->" fn={savePassenger} off={!name.trim()} />
+    <AuthBg backFn={()=>setStep('otp')}>
+      <AppLogo />
+      <div style={{ marginBottom:20 }}>
+        <div style={{ fontSize:20,fontWeight:800,color:'#fff',marginBottom:4 }}>Create Account</div>
+        <div style={{ fontSize:13,color:'rgba(255,255,255,0.5)' }}>Just your name to get started</div>
       </div>
-    </div>
+
+      <div style={{ display:'flex',flexDirection:'column',gap:10,marginBottom:16 }}>
+        <GlassInp val={name} set={setName} ph="Your full name" autoFocus />
+        <GlassInp val={email} set={setEmail} ph="Email (optional)" type="email" />
+      </div>
+
+      <ErrBox msg={error} />
+      <GlassBtn label="Start Riding →" fn={savePassenger} off={!name.trim()} />
+    </AuthBg>
   )
 
   return null
 }
+
