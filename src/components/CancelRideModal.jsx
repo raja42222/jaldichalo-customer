@@ -58,7 +58,12 @@ export default function CancelRideModal({ ride, role, userId, onCancelled, onClo
         p_reason:     reason,
       })
       if (rpcErr) throw rpcErr
-      if (!data?.success) throw new Error(data?.error || 'Cancel failed')
+      // "Ride already ended" = ride is done = treat as success, just close
+      if (data?.error === 'Ride already ended' || data?.message?.includes('already ended')) {
+        onCancelled({ ok: true, alreadyEnded: true, penalty: 0 })
+        return
+      }
+      if (!data?.ok && !data?.success) throw new Error(data?.error || 'Cancel failed')
       setStep('done')
       setTimeout(() => onCancelled(data), 400)
     } catch (e) {

@@ -148,7 +148,8 @@ class DriverAnim {
 export default function MapView({
   center, pickupCoords, dropCoords,
   driverCoords, nearbyDrivers,
-  showRoute, zoom=14, bottomPad=180,
+  showRoute, showDriverToPickup=false,
+  zoom=14, bottomPad=180,
   onReady,
 }) {
   const divRef    = useRef(null)
@@ -212,7 +213,19 @@ export default function MapView({
     syncDriver(driverCoords)
     syncNearby(nearbyDrivers||[])
     syncRoute()
+    syncDriverToPickup()
     syncBounds()
+  }
+
+  function syncDriverToPickup() {
+    if(!mapRef.current) return
+    const src = mapRef.current.getSource('driver-to-pick')
+    if(!src) return
+    if(!showDriverToPickup || !driverCoords || !pickupCoords) {
+      src.setData(emptyGJ()); return
+    }
+    const coords = [[driverCoords[1],driverCoords[0]],[pickupCoords[1],pickupCoords[0]]]
+    src.setData({type:'Feature',geometry:{type:'LineString',coordinates:coords}})
   }
 
   function syncCenter() {
@@ -230,12 +243,14 @@ export default function MapView({
     pins.current[key] = new ml.Marker({element:el,anchor:'center'}).setLngLat(ll).addTo(mapRef.current)
   }
 
-  /* Driver marker with smooth animation */
+  /* Driver marker with smooth animation + route trail */
   function syncDriver(coords) {
     const ml=window.maplibregl, anim=drvAnim.current
     if(!ml||!mapRef.current) return
     if(!coords) {
       if(anim.mk) { anim.mk.remove(); anim.destroy(); drvAnim.current=new DriverAnim() }
+      // Clear trail
+      try { mapRef.current.getSource('driver-trail')?.setData({type:'Feature',geometry:{type:'LineString',coordinates:[]}}) } catch {}
       return
     }
     const [lat,lng] = coords
@@ -245,6 +260,22 @@ export default function MapView({
       anim.attach(mk,el); anim.teleport(lng,lat)
     } else {
       anim.push(lng,lat)
+    }
+    // Draw driver movement trail
+    if(anim.hist && anim.hist.length > 1) {
+      try {
+        const trailCoords = [...anim.hist, [lng, lat]]
+        const src = mapRef.current.getSource('driver-trail')
+        if(src) {
+          src.setData({type:'Feature',geometry:{type:'LineString',coordinates:trailCoords}})
+        } else if(mapRef.current.isStyleLoaded()) {
+          mapRef.current.addSource('driver-trail', {type:'geojson', data:{type:'Feature',geometry:{type:'LineString',coordinates:trailCoords}}})
+          mapRef.current.addLayer({id:'driver-trail',type:'line',source:'driver-trail',
+            layout:{'line-join':'round','line-cap':'round'},
+            paint:{'line-color':'rgba(255,95,31,0.35)','line-width':3.5,'line-dasharray':[2,4]}
+          })
+        }
+      } catch {}
     }
   }
 
